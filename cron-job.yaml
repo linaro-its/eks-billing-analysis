@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-cron
+spec:
+  schedule: "0 10 * * *"
+  startingDeadlineSeconds: 300
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: eks-billing-serviceaccount
+          containers:
+          - name: billing
+            image: eks-billing-analysis:1
+            imagePullPolicy: IfNotPresent
+          restartPolicy: Never
