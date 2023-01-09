@@ -180,7 +180,7 @@ def compare_project_costs(previous_data: list, auth_token: str, project: dict):
         last_output = ""
         pipeline_len = len(project["pipelines"])
         for pipeline in project["pipelines"]:
-            new_output = f"{int(counter*100/pipeline_len)}%"
+            new_output = f"Saving job costs: {int(counter*100/pipeline_len)}%"
             if new_output != last_output:
                 output(new_output, LogLevel.INFO)
                 last_output = new_output
@@ -616,7 +616,7 @@ def process_s3_object(s3_key: str):
     last_output = ""
     usk_len = len(USAGE_START_KEYS)
     for start in USAGE_START_KEYS:
-        new_output = f"{int(counter*100/usk_len)}%: {start}" if DEBUG else f"{int(counter*100/len(USAGE_START_KEYS))}%"
+        new_output = f"Reading CUR: {int(counter*100/usk_len)}%: {start}" if DEBUG else f"Reading CUR: {int(counter*100/len(USAGE_START_KEYS))}%"
         if new_output != last_output:
             output(new_output, LogLevel.INFO)
             last_output = new_output
