@@ -66,6 +66,7 @@ EXPECTED_BASED_COSTS = [
     "AWSSecretsManager",
     "AmazonECR",  # Stores the container to run the script as a job
     "AWSLambda",  # Can be removed once Lambda is no longer used
+    "AmazonApiGateway", # Used by CodeLinaro to run a k8s admission controller, deployed with Zappa
     "AWSSupportBusiness",
     # The following costs can be caused by Trusted Advisor. The amounts are small
     # but we need to allow for them otherwise they get classed as unallocated.
