@@ -121,7 +121,6 @@ def get_secret(secret_name: str):
 def sync_codelinaro_project_costs(cur_file: str):
     """Send any new/updated project costs to CodeLinaro's API
 
-
     Args:
         cur_file (str): S3 CUR file key
     """
