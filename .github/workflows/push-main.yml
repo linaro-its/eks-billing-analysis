@@ -2,7 +2,7 @@ name: push-main
 
 on:
   push:
-    branches: [main, cronjob]
+    branches: [main]
     paths-ignore:
       - .github/workflows/pullrequest.yml
   workflow_dispatch:
@@ -19,14 +19,14 @@ jobs:
       - name: SonarQube scan
         uses: sonarsource/sonarqube-scan-action@master
         env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONARQUBE_HOST }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: SonarQube quality check
         uses: sonarsource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Cleanup scan
         run: sudo rm -rf "$GITHUB_WORKSPACE/.scannerwork"
