@@ -66,7 +66,8 @@ EXPECTED_BASED_COSTS = [
     "AWSSecretsManager",
     "AmazonECR",  # Stores the container to run the script as a job
     "AWSLambda",  # Can be removed once Lambda is no longer used
-    "AmazonApiGateway", # Used by CodeLinaro to run a k8s admission controller, deployed with Zappa
+    "AmazonApiGateway", # Used by CodeLinaro to run a k8s admission controller and an
+                        # endpoint to manage EFS persistent storage, deployed with Zappa
     "AWSSupportBusiness",
     # The following costs can be caused by Trusted Advisor. The amounts are small
     # but we need to allow for them otherwise they get classed as unallocated.
@@ -1504,7 +1505,7 @@ def process_cur_report(s3_bucket: str, s3_key: str):
             CUR_FILE.append(row)
         code = row[PRODUCT_CODE]
         # There are lots of different line item types but only three
-        # relates to usage chargess
+        # relates to usage charges
         if "Usage" not in row["lineItem/LineItemType"]:
             process_base_cost(row)
         elif code in EXPECTED_BASED_COSTS:
