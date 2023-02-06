@@ -14,7 +14,52 @@ In the same region as the EKS cluster, create a secret (e.g. `eks-billing-analys
 
 ### Template file setup
 
-Copy `templates/ci-access-policy.json` to the root directory and provide the values for the CUR bucket name, the CI cache bucket name and the billing results bucket name. If not running for CodeLinaro, the block that allows "secretsmanager" actions can be deleted, otherwise the ARN for the secret needs to be provided.
+It is necessary to set up an access policy to allow the script, while running in the EKS cluster, to access various other parts of the infrastructure.
+
+There are two template files - `templates/ci-access-policy-cross-account.json` and `templates/ci-access-policy/same-account.json`. The names should indicate which one is needed, depending on whether you are accessing the CUR files from a different account or the same account.
+
+Copy the desired template to the root directory and provide the values for the CUR bucket name, the CI cache bucket name and the billing results bucket name. If not running for CodeLinaro, the block that allows "secretsmanager" actions can be deleted, otherwise the ARN for the secret needs to be provided.
+
+If using the cross-account template, it is necessary to create a role in the account holding the CUR that grants access when the role is assumed:
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::CUR BUCKET/*",
+                "arn:aws:s3:::CUR BUCKET"
+            ]
+        }
+    ]
+}
+```
+
+The role needs a trust relationship allowing it to be assumed by the account(s) where the script will be run:
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::ACCOUNT NUMBER:root"
+                ]
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {}
+        }
+    ]
+}
+```
 
 ### ci.sh setup
 
@@ -77,11 +122,15 @@ There are some values that need to be defined:
 
 * CUR_BUCKET_NAME. This is the name of the S3 bucket where the CUR files are being stored.
 
+* CUR_PREFIX. The path that comes before the date portion of the CUR file name.
+
 * CACHE_BUCKET_NAME. This is the name of the S3 bucket used for the GitLab CI cache.
 
 * CW_VPC_FLOW_LOGS. The CloudWatch logs group for VPC flow logs.
 
 * CW_CLUSTER_LOGS. The CloudWatch logs group for the EKS Fargate cluster.
+
+* ASSUME_ROLE. Optional: the name of the role to assume before accessing the CUR S3 bucket. If this is NOT an empty string, the script will assume that a consolidated billing CUR is being used and will filter the contents of the report based on the value of `lineItem/UsageAccountId` matching the account where the script is being run.
 
 The script itself has two values to alter whether or not debugging is being done, and whether or not warnings should be suppressed or displayed.
 
