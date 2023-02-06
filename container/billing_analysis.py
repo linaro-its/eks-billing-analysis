@@ -19,10 +19,11 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 from dateutil import parser as dateutil_parser
+from mypy_boto3_s3.client import S3Client
 
 # Switch to True to enable sanity checking of costs (e.g. if the script starts
 # reporting that the numbers aren't matching).
-DEBUG = False
+DEBUG = True
 # Turn these to True to force the associated cost to zero. By setting all but one
 # to True (and one to False), this can help with tracking down missing costs or
 # costs that are getting added multiple times.
@@ -33,11 +34,13 @@ DEBUG_INSTANCE_COSTS = False
 DEBUG_EC2NW_COSTS = False
 
 # Set to True if using the CodeLinaro APIs to save the costs.
-SAVE_TO_CODELINARO = True
+SAVE_TO_CODELINARO = False
 
 WARNINGS = True
 
 CUR_BUCKET = None
+CUR_PREFIX = None
+ASSUME_ROLE = None
 RESULTS_BUCKET = None
 CACHE_BUCKET = None
 CW_VPC_FLOW_LOGS = None
@@ -66,8 +69,8 @@ EXPECTED_BASED_COSTS = [
     "AWSSecretsManager",
     "AmazonECR",  # Stores the container to run the script as a job
     "AWSLambda",  # Can be removed once Lambda is no longer used
-    "AmazonApiGateway", # Used by CodeLinaro to run a k8s admission controller and an
-                        # endpoint to manage EFS persistent storage, deployed with Zappa
+    "AmazonApiGateway",  # Used by CodeLinaro to run a k8s admission controller and an
+    # endpoint to manage EFS persistent storage, deployed with Zappa
     "AWSSupportBusiness",
     # The following costs can be caused by Trusted Advisor. The amounts are small
     # but we need to allow for them otherwise they get classed as unallocated.
@@ -87,12 +90,14 @@ class LogLevel(Enum):
 # CODELINARO SPECIFIC CODE #
 ############################
 
+
 # Globals from env vars for CodeLinaro-specific code
 AUTH0_CLIENT_ID = ""
 AUTH0_CLIENT_SECRET_KEY = ""
 AUTH0_CLIENT_AUDIENCE = ""
 AUTH0_CLIENT_URL = ""
 CLO_API_URL = ""
+
 
 def get_secret(secret_name: str):
     """Retrieve secrets from AWS Secrets Manager
@@ -133,7 +138,7 @@ def sync_codelinaro_project_costs(cur_file: str):
     client = boto3.client("s3")
     try:
         response = client.get_object(
-            Bucket=RESULTS_BUCKET,
+            Bucket=RESULTS_BUCKET, # type: ignore
             Key=f"{path}/project_costs.json"
         )
         json_file_reader = response['Body'].read()
@@ -373,6 +378,7 @@ def initialise_codelinaro_globals():
 # END OF CODELINARO SPECIFIC CODE #
 ###################################
 
+
 def output(string: str, level: LogLevel):
     """Handle the output request
 
@@ -396,7 +402,7 @@ def output(string: str, level: LogLevel):
         PROCESSING_ERROR = True
     elif level == LogLevel.WARNING:
         string = f"Warning! {string}"
-    if LOG_STREAM_NAME == "":
+    if True or LOG_STREAM_NAME == "":
         print(string)
         return
 
@@ -429,7 +435,9 @@ def output(string: str, level: LogLevel):
             LOG_STREAM_TOKEN = response["nextSequenceToken"]
             return
         except ClientError as exc:
-            if exc.response['Error']['Code'] == 'ThrottlingException':
+            if "Error" in exc.response and \
+                    "Code" in exc.response["Error"] and \
+                        exc.response['Error']['Code'] == 'ThrottlingException':
                 time.sleep(3)
             else:
                 raise
@@ -437,27 +445,27 @@ def output(string: str, level: LogLevel):
 
 def perform_billing_analysis():
     """ The main function for the script """
-    try:
-        check_environment_variables()
-        set_up_cloudwatch()
-        # Process this month
-        today = datetime.date.today()
-        process_billing_report(today.month, today.year)
-        # Process last month if there was anything
-        last_month = today.month - 1
-        if last_month < 1:
-            last_month = last_month + 12
-            last_month_year = today.year - 1
-        else:
-            last_month_year = today.year
-        process_billing_report(last_month, last_month_year)
-        if not PROCESSING_ERROR:
-            output("Processing has completed", LogLevel.INFO)
-    except Exception as exc:
-        output(
-            "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
-        output(str(exc), LogLevel.ERROR)
-        output(''.join(traceback.format_tb(exc.__traceback__)), LogLevel.ERROR)
+    # try:
+    check_environment_variables()
+    set_up_cloudwatch()
+    # Process this month
+    today = datetime.date.today()
+    process_billing_report(today.month, today.year)
+    # Process last month if there was anything
+    last_month = today.month - 1
+    if last_month < 1:
+        last_month = last_month + 12
+        last_month_year = today.year - 1
+    else:
+        last_month_year = today.year
+    process_billing_report(last_month, last_month_year)
+    if not PROCESSING_ERROR:
+        output("Processing has completed", LogLevel.INFO)
+    # except Exception as exc:
+    #     output(
+    #         "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
+    #     output(str(exc), LogLevel.ERROR)
+    #     output(''.join(traceback.format_tb(exc.__traceback__)), LogLevel.ERROR)
 
 
 def set_up_cloudwatch():
@@ -474,7 +482,7 @@ def create_cloudwatch_log_group():
     )
     log_groups = response["logGroups"]
     for lg in log_groups:
-        if lg["logGroupName"] == ANALYSIS_LOG_GROUP:
+        if "logGroupName" in lg and lg["logGroupName"] == ANALYSIS_LOG_GROUP:
             return
     response = client.create_log_group(
         logGroupName=ANALYSIS_LOG_GROUP
@@ -521,20 +529,7 @@ def process_billing_report(month: int, year: int):
     # want to be checking for.
     if last_cur_file is None:
         output(f"No previous CUR file used for {month}/{year}", LogLevel.INFO)
-    # Now scan all of the files in the CUR bucket, looking for files in that date range
-    # and find the latest one.
-    s3_resource = boto3.resource('s3')
-    cur_bucket = s3_resource.Bucket(CUR_BUCKET)  # type: ignore
-    found_latest = None
-    for obj in cur_bucket.objects.all():
-        obj_key = obj.key
-        parts = obj_key.split("/")
-        if obj_key.endswith(".csv.gz") and \
-                parts[2] == date_range and \
-                (found_latest is None or found_latest < obj_key):
-            found_latest = obj_key
-    # When we get to here, found_latest should be the latest CUR file for the required
-    # date range, or None if there aren't any.
+    found_latest = get_cur_from_manifest(date_range)
     if found_latest is None:
         output(f"No CUR files for date range {date_range}", LogLevel.INFO)
         return
@@ -544,10 +539,77 @@ def process_billing_report(month: int, year: int):
     process_s3_object(found_latest)
 
 
+def get_cur_s3_client() -> S3Client:
+    if ASSUME_ROLE is None or ASSUME_ROLE == "":
+        return boto3.client('s3')
+
+    # create an STS client object that represents a live connection to the 
+    # STS service
+    sts_client = boto3.client('sts')
+
+    # Call the assume_role method of the STSConnection object and pass the role
+    # ARN and a role session name.
+    assumed_role_object=sts_client.assume_role(
+        RoleArn=ASSUME_ROLE,
+        RoleSessionName="AssumeRoleSession1"
+    )
+
+    # From the response that contains the assumed role, get the temporary 
+    # credentials that can be used to make subsequent API calls
+    credentials=assumed_role_object['Credentials']
+
+    # Use the temporary credentials that AssumeRole returns to make a 
+    # connection to Amazon S3  
+    return boto3.client(
+        's3',
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken'],
+    )
+
+
+def get_cur_from_manifest(date_range: str) -> Union[str, None]:
+    """Read the manifest file for the specified date range and return the
+       report name from the file.
+
+    Args:
+        date_range (str): date range for the desired CUR
+
+    Returns:
+        str: full CUR filename
+    """
+    # The name of the manifest file is the second half of the
+    # CUR prefix, with "-Manifest.json" appended.
+    if CUR_PREFIX is None:
+        return None
+    parts = CUR_PREFIX.split("/")
+    if len(parts) != 2:
+        return None
+    manifest = f"{parts[1]}-Manifest.json"
+
+    s3 = get_cur_s3_client()
+    content = {}
+    try:
+        json_object = s3.get_object(
+            Bucket=CUR_BUCKET, # type: ignore
+            Key=f"{CUR_PREFIX}/{date_range}/{manifest}")
+        json_file_reader = json_object['Body'].read()
+        content = json.loads(json_file_reader)
+    except s3.exceptions.from_code("NoSuchKey"): # type: ignore
+        pass
+    if "reportKeys" in content:
+        keys = content["reportKeys"]
+        if isinstance(keys, list) and len(keys) > 0:
+            return keys[0]
+    return None
+
+
 def check_environment_variables():
     """ Get the variables for the CloudWatch log groups """
-    global CUR_BUCKET, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL
+    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL
     CUR_BUCKET = check_and_return("CUR_BUCKET_NAME")
+    CUR_PREFIX = check_and_return("CUR_PREFIX")
+    ASSUME_ROLE = check_and_return("ASSUME_ROLE")
     RESULTS_BUCKET = check_and_return("RESULTS_BUCKET_NAME")
     CACHE_BUCKET = check_and_return("CACHE_BUCKET_NAME")
     CW_VPC_FLOW_LOGS = check_and_return("CW_VPC_FLOW_LOGS")
@@ -798,10 +860,11 @@ def save_to_s3(cur_file: str, data: Type, filename: str):
     json.dump(data, temp)
     temp.close()
     # Upload that file to S3
-    client = boto3.client("s3")
-    client.upload_file(temp_filename, RESULTS_BUCKET, f"{path}/{filename}")
+    if RESULTS_BUCKET is not None:
+        client = boto3.client("s3")
+        client.upload_file(temp_filename, RESULTS_BUCKET, f"{path}/{filename}")
     # Delete the temporary file
-    os.remove(temp_filename)
+    os.remove(path=temp_filename)
 
 
 def load_from_s3(date_range: str, filename: str, if_not_found: Union[None, dict]) -> Type:
@@ -816,13 +879,16 @@ def load_from_s3(date_range: str, filename: str, if_not_found: Union[None, dict]
         Type: either the data read from the file or the value of if_not_found
     """
     content = if_not_found
+    if RESULTS_BUCKET is None:
+        return content
+    
     s3 = boto3.client('s3')
     try:
         json_object = s3.get_object(
             Bucket=RESULTS_BUCKET, Key=f"{date_range}/{filename}")
         json_file_reader = json_object['Body'].read()
         content = json.loads(json_file_reader)
-    except s3.exceptions.from_code("NoSuchKey"):
+    except s3.exceptions.from_code("NoSuchKey"): # type: ignore
         pass
     return content
 
@@ -898,7 +964,7 @@ def totalise_unallocated_costs() -> float:
     return month_unallocated_total
 
 
-def equal_to_x_dp(value1: float, value2: float, dp: int=10) -> bool:
+def equal_to_x_dp(value1: float, value2: float, dp: int = 10) -> bool:
     """Compare two floats to the specified number of decimal places
 
     Args:
@@ -1493,36 +1559,51 @@ def process_cur_report(s3_bucket: str, s3_key: str):
         s3_bucket (str): S3 bucket to retrieve file from
         s3_key (str): Key for S3 file to read
     """
-    global TOTAL_COST_FROM_CUR, CUR_FILE_ROW_COUNT
+    # If we are assuming a role to read the CUR file,
+    # we filter on the current account's ID.
+    if ASSUME_ROLE is None or ASSUME_ROLE == "":
+        match_account = None
+    else:
+        match_account = boto3.client('sts').get_caller_identity().get('Account')
 
-    s3 = boto3.client('s3')
+    s3 = get_cur_s3_client()
     response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
     gzipped = GzipFile(None, 'rb', fileobj=response['Body'])
     data = TextIOWrapper(gzipped)  # type: ignore
     reader = csv.DictReader(data)
     for row in reader:
-        if DEBUG:
-            CUR_FILE.append(row)
-        code = row[PRODUCT_CODE]
-        # There are lots of different line item types but only three
-        # relates to usage charges
-        if "Usage" not in row["lineItem/LineItemType"]:
-            process_base_cost(row)
-        elif code in EXPECTED_BASED_COSTS:
-            process_base_cost(row)
-        elif code == "AmazonEC2":
-            process_ec2(row)
-        elif code == "AmazonEKS":
-            process_eks(row)
-        elif code == "AmazonS3":
-            process_s3(row)
-        else:
-            add_to(UNALLOCATED_COSTS, row)
-        CUR_FILE_ROW_COUNT += 1
-        TOTAL_COST_FROM_CUR += float(row[UNBLENDED_COST])
+        process_cur_row(row, match_account)
     check_pending_volumes()
     output(
         f"Sanity check: rows counted = {CUR_FILE_ROW_COUNT}, size of list = {len(CUR_FILE)}", LogLevel.DEBUG)
+
+
+def process_cur_row(row: dict, match_account: Union[str, None]):
+    global TOTAL_COST_FROM_CUR, CUR_FILE_ROW_COUNT
+
+    # Check if we need to process this row based on match_account
+    if match_account is not None and row["lineItem/UsageAccountId"] != match_account:
+        return
+
+    if DEBUG:
+        CUR_FILE.append(row)
+    code = row[PRODUCT_CODE]
+        # There are lots of different line item types but only three
+        # relates to usage charges
+    if "Usage" not in row["lineItem/LineItemType"]:
+        process_base_cost(row)
+    elif code in EXPECTED_BASED_COSTS:
+        process_base_cost(row)
+    elif code == "AmazonEC2":
+        process_ec2(row)
+    elif code == "AmazonEKS":
+        process_eks(row)
+    elif code == "AmazonS3":
+        process_s3(row)
+    else:
+        add_to(UNALLOCATED_COSTS, row)
+    CUR_FILE_ROW_COUNT += 1
+    TOTAL_COST_FROM_CUR += float(row[UNBLENDED_COST])
 
 
 def check_pending_volumes():
@@ -1554,7 +1635,7 @@ def volume_in_nodegroup(row):
     return False
 
 
-def add_to(cost_dict: dict, row: dict, key: Union[None, str]=None):
+def add_to(cost_dict: dict, row: dict, key: Union[None, str] = None):
     """Add the cost from row to the specified cost dict, keyed by date
 
     Args:
@@ -1576,7 +1657,9 @@ def add_to(cost_dict: dict, row: dict, key: Union[None, str]=None):
         if row[USAGE_TYPE] == "":
             key += row["lineItem/LineItemType"]
     cost = float(row[UNBLENDED_COST])
-    add_cost_to_dict(cost_dict, row[USAGE_START_DATE], key, cost)  # type: ignore
+    # Need to set type: ignore here because we *know* that key cannot be
+    # None yet pylance complains ...
+    add_cost_to_dict(cost_dict, row[USAGE_START_DATE], key, cost) # type: ignore
 
 
 def add_cost_to_dict(cost_dict: dict, date_time_str: str, key: str, cost: float):
@@ -1954,7 +2037,7 @@ def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS,
+        logGroupName=CW_CLUSTER_LOGS, # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2025,7 +2108,7 @@ def ec2_node_hostname(resource_id: str, start_time: datetime.datetime, end_time:
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS,
+        logGroupName=CW_CLUSTER_LOGS, # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2193,7 +2276,7 @@ def ci_ids_from_runner_logs(runner_name: str, start_time: Union[datetime.datetim
 
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS,
+        logGroupName=CW_CLUSTER_LOGS, # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2277,18 +2360,23 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
     )
 
     for group in response["logGroups"]:
-        if group["logGroupName"] == log_group:
+        if "logGroupName" in group and group["logGroupName"] == log_group:
+            if "creationTime" not in group:
+                return None, None
             creation_time = int(group["creationTime"])
             if start_timestamp < creation_time and end_timestamp < creation_time:
                 return None, None
             # Calculate the earliest possible log date/time given the retention period.
-            retention = datetime.datetime.now(
-            ) - datetime.timedelta(days=group["retentionInDays"])
+            if "retentionInDays" not in group:
+                return None, None
+            retention = datetime.datetime.now() \
+                - datetime.timedelta(days=group["retentionInDays"])
             retention = int(retention.timestamp()) * 1000
             if start_timestamp < retention and end_timestamp < retention:
                 return None, None
             if start_timestamp < creation_time:
-                start_time = datetime.datetime.fromtimestamp(creation_time/1000.0)
+                start_time = datetime.datetime.fromtimestamp(
+                    creation_time/1000.0)
             break
 
     return start_time, end_time
@@ -2347,7 +2435,7 @@ def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], en
     ip_address = None
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS,
+        logGroupName=CW_CLUSTER_LOGS, # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=(
@@ -2414,7 +2502,7 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
     response = client.describe_nat_gateways(
         NatGatewayIds=[nat_id]
     )
-    eni = response["NatGateways"][0]["NatGatewayAddresses"][0]["NetworkInterfaceId"]
+    eni = response["NatGateways"][0]["NatGatewayAddresses"][0]["NetworkInterfaceId"] # type: ignore
 
     query_string = (
         "fields @timestamp, @message"
@@ -2425,7 +2513,7 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_VPC_FLOW_LOGS,
+        logGroupName=CW_VPC_FLOW_LOGS, # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
