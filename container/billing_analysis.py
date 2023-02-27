@@ -23,7 +23,7 @@ from mypy_boto3_s3.client import S3Client
 
 # Switch to True to enable sanity checking of costs (e.g. if the script starts
 # reporting that the numbers aren't matching).
-DEBUG = True
+DEBUG = False
 # Turn these to True to force the associated cost to zero. By setting all but one
 # to True (and one to False), this can help with tracking down missing costs or
 # costs that are getting added multiple times.
@@ -124,22 +124,21 @@ def get_secret(secret_name: str):
     GITLAB_TOKEN = secret["GITLAB_TOKEN"]
 
 
-def sync_codelinaro_project_costs(cur_file: str):
+def sync_codelinaro_project_costs(date_range: str):
     """Send any new/updated project costs to CodeLinaro's API
 
     Args:
-        cur_file (str): S3 CUR file key
+        date_range (str): the date range for the CUR file
     """
     previous_data = []
 
     # If a file already exists on S3, read it into previous_data
-    path = date_range_from_cur_path(cur_file)
-    year_month = path[:6]
+    year_month = date_range[:6]
     client = boto3.client("s3")
     try:
         response = client.get_object(
             Bucket=RESULTS_BUCKET, # type: ignore
-            Key=f"{path}/project_costs.json"
+            Key=f"{date_range}/project_costs.json"
         )
         json_file_reader = response['Body'].read()
         previous_data = json.loads(json_file_reader)
@@ -402,7 +401,7 @@ def output(string: str, level: LogLevel):
         PROCESSING_ERROR = True
     elif level == LogLevel.WARNING:
         string = f"Warning! {string}"
-    if True or LOG_STREAM_NAME == "":
+    if LOG_STREAM_NAME == "":
         print(string)
         return
 
@@ -445,27 +444,27 @@ def output(string: str, level: LogLevel):
 
 def perform_billing_analysis():
     """ The main function for the script """
-    # try:
-    check_environment_variables()
-    set_up_cloudwatch()
-    # Process this month
-    today = datetime.date.today()
-    process_billing_report(today.month, today.year)
-    # Process last month if there was anything
-    last_month = today.month - 1
-    if last_month < 1:
-        last_month = last_month + 12
-        last_month_year = today.year - 1
-    else:
-        last_month_year = today.year
-    process_billing_report(last_month, last_month_year)
-    if not PROCESSING_ERROR:
-        output("Processing has completed", LogLevel.INFO)
-    # except Exception as exc:
-    #     output(
-    #         "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
-    #     output(str(exc), LogLevel.ERROR)
-    #     output(''.join(traceback.format_tb(exc.__traceback__)), LogLevel.ERROR)
+    try:
+        check_environment_variables()
+        set_up_cloudwatch()
+        # Process this month
+        today = datetime.date.today()
+        process_billing_report(today.month, today.year)
+        # Process last month if there was anything
+        last_month = today.month - 1
+        if last_month < 1:
+            last_month = last_month + 12
+            last_month_year = today.year - 1
+        else:
+            last_month_year = today.year
+        process_billing_report(last_month, last_month_year)
+        if not PROCESSING_ERROR:
+            output("Processing has completed", LogLevel.INFO)
+    except Exception as exc:
+        output(
+            "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
+        output(str(exc), LogLevel.ERROR)
+        output(''.join(traceback.format_tb(exc.__traceback__)), LogLevel.ERROR)
 
 
 def set_up_cloudwatch():
@@ -536,7 +535,7 @@ def process_billing_report(month: int, year: int):
     if found_latest == last_cur_file:
         output(f"No newer CUR file since {last_cur_file}", LogLevel.INFO)
         return
-    process_s3_object(found_latest)
+    process_s3_object(found_latest, date_range)
 
 
 def get_cur_s3_client() -> S3Client:
@@ -568,7 +567,7 @@ def get_cur_s3_client() -> S3Client:
     )
 
 
-def get_cur_from_manifest(date_range: str) -> Union[str, None]:
+def get_cur_from_manifest(date_range: str) -> Union[list, None]:
     """Read the manifest file for the specified date range and return the
        report name from the file.
 
@@ -598,9 +597,7 @@ def get_cur_from_manifest(date_range: str) -> Union[str, None]:
     except s3.exceptions.from_code("NoSuchKey"): # type: ignore
         pass
     if "reportKeys" in content:
-        keys = content["reportKeys"]
-        if isinstance(keys, list) and len(keys) > 0:
-            return keys[0]
+        return content["reportKeys"]
     return None
 
 
@@ -638,21 +635,25 @@ def check_and_return(os_var: str) -> str:
     return os.environ[os_var]
 
 
-def process_s3_object(s3_key: str):
+def process_s3_object(s3_key: list, date_range: str):
     """Do some checks and then analyse if appropriate
 
     Args:
-        s3_key (str): S3 file key
+        s3_key (list): list of S3 file keys from the manifest
     """
-    output(f"Processing CUR file {s3_key}", LogLevel.INFO)
     initialise_billing_globals()
+    print(f"{len(s3_key)} CUR file(s) to process ...")
+    for key in s3_key:
+        output(f"Processing CUR file {key}", LogLevel.INFO)
+        # Read in the CUR file and either add each cost to BASE, UNALLOCATED or
+        # mark it as pending.
+        process_cur_report(CUR_BUCKET, key) # type: ignore
 
-    # Read in the CUR file and either add each cost to BASE, UNALLOCATED or
-    # mark it as pending.
-    if CUR_BUCKET is not None:
-        process_cur_report(CUR_BUCKET, s3_key)
+    check_pending_volumes()
 
     if DEBUG:
+        output(
+            f"Sanity check: rows counted = {CUR_FILE_ROW_COUNT}, size of list = {len(CUR_FILE)}", LogLevel.DEBUG)
         # Sanity check the totals so far ...
         total_test = sanity_check_totals(PENDING_FARGATE_COSTS,
                                          "PENDING_FARGATE_COSTS")
@@ -719,7 +720,7 @@ def process_s3_object(s3_key: str):
     # measure.
     check_for_unprocessed_ec2nw_costs()
 
-    totalise_costs(s3_key)
+    totalise_costs(date_range, s3_key)
 
 
 def check_for_unprocessed_ec2nw_costs():
@@ -845,15 +846,14 @@ def date_range_from_cur_path(cur_file: str) -> str:
     return parts[2]
 
 
-def save_to_s3(cur_file: str, data: Type, filename: str):
+def save_to_s3(date_range: str, data: Type, filename: str):
     """Save the data as a JSON-encoded file in the results bucket
 
     Args:
-        cur_file (str): the origiinal CUR filename
+        date_range (str): the date range for this CUR file
         data (Type): the data to save to S3 in JSON format
         filename (str): the filename to save it under
     """
-    path = date_range_from_cur_path(cur_file)
     # Save the data to a temporary file
     temp = tempfile.NamedTemporaryFile(mode="w", delete=False)
     temp_filename = temp.name
@@ -862,7 +862,7 @@ def save_to_s3(cur_file: str, data: Type, filename: str):
     # Upload that file to S3
     if RESULTS_BUCKET is not None:
         client = boto3.client("s3")
-        client.upload_file(temp_filename, RESULTS_BUCKET, f"{path}/{filename}")
+        client.upload_file(temp_filename, RESULTS_BUCKET, f"{date_range}/{filename}")
     # Delete the temporary file
     os.remove(path=temp_filename)
 
@@ -980,11 +980,11 @@ def equal_to_x_dp(value1: float, value2: float, dp: int = 10) -> bool:
     return str_value1 == str_value2
 
 
-def totalise_costs(cur_file: str):
+def totalise_costs(date_range: str, cur_file: list):
     """Add all the costs up and export them
 
     Args:
-        cur_file (str): the CUR filename, used to determine where to save the results
+        date_range (str): the date range for this CUR file
     """
     costs_found = totalise_project_costs()
     if not equal_to_x_dp(costs_found, TOTAL_ALLOCATED):
@@ -1023,12 +1023,12 @@ def totalise_costs(cur_file: str):
 
     if not PROCESSING_ERROR:
         if SAVE_TO_CODELINARO:
-            sync_codelinaro_project_costs(cur_file)
-        save_to_s3(cur_file, PROJECT_COSTS, "project_costs.json")
-        save_to_s3(cur_file, BASE_COSTS, "base_costs.json")
-        save_to_s3(cur_file, UNALLOCATED_COSTS, "unallocated_costs.json")
-        save_to_s3(cur_file, cur_file, "cur_used.txt")
-        save_to_s3(cur_file, ANALYSIS_CACHE, "analysis_cache.json")
+            sync_codelinaro_project_costs(date_range)
+        save_to_s3(date_range, PROJECT_COSTS, "project_costs.json")
+        save_to_s3(date_range, BASE_COSTS, "base_costs.json")
+        save_to_s3(date_range, UNALLOCATED_COSTS, "unallocated_costs.json")
+        save_to_s3(date_range, cur_file, "cur_used.txt")
+        save_to_s3(date_range, ANALYSIS_CACHE, "analysis_cache.json")
     else:
         output("Cost files have not been saved due to a processing error", LogLevel.INFO)
 
@@ -1442,7 +1442,13 @@ def process_pending_fargate_costs(start_time: str, network_total_cost: float, na
     # how much NAT traffic it generated or received.
     for proj in PENDING_FARGATE_COSTS[start_time]:
         resource_id = proj[RESOURCE_ID]
-        add_project_build_cost(job_data[resource_id], proj, "Fargate")
+        if len(job_data[resource_id]) != 0:
+            add_project_build_cost(job_data[resource_id], proj, "Fargate")
+        else:
+            # This didn't have any runners
+            output(
+                f"Adding Fargate costs for {resource_id} to base (no runners)", LogLevel.DEBUG)
+            add_to(BASE_COSTS, proj)
         if nat_gateway is not None:
             total_bytes += calculate_network_usage(
                 nat_gateway, project_network_usage, proj, job_data)
@@ -1573,9 +1579,6 @@ def process_cur_report(s3_bucket: str, s3_key: str):
     reader = csv.DictReader(data)
     for row in reader:
         process_cur_row(row, match_account)
-    check_pending_volumes()
-    output(
-        f"Sanity check: rows counted = {CUR_FILE_ROW_COUNT}, size of list = {len(CUR_FILE)}", LogLevel.DEBUG)
 
 
 def process_cur_row(row: dict, match_account: Union[str, None]):
