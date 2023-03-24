@@ -24,6 +24,8 @@ from mypy_boto3_s3.client import S3Client
 # Switch to True to enable sanity checking of costs (e.g. if the script starts
 # reporting that the numbers aren't matching).
 DEBUG = False
+# Switch to True to send output to stdout instead of CloudWatch logs
+DEBUG_PROGRESS = False
 # Turn these to True to force the associated cost to zero. By setting all but one
 # to True (and one to False), this can help with tracking down missing costs or
 # costs that are getting added multiple times.
@@ -34,7 +36,7 @@ DEBUG_INSTANCE_COSTS = False
 DEBUG_EC2NW_COSTS = False
 
 # Set to True if using the CodeLinaro APIs to save the costs.
-SAVE_TO_CODELINARO = False
+SAVE_TO_CODELINARO = True
 
 WARNINGS = True
 
@@ -63,7 +65,7 @@ USER_NAME_TAG = "resourceTags/user:Name"
 PROVISIONER_NAME = "karpenter.sh/provisioner-name/"
 ANALYSIS_LOG_GROUP = "ci-billing-analysis"
 
-EXPECTED_BASED_COSTS = [
+EXPECTED_BASE_COSTS = [
     "awskms",
     "AmazonCloudWatch",
     "AWSSecretsManager",
@@ -97,6 +99,7 @@ AUTH0_CLIENT_SECRET_KEY = ""
 AUTH0_CLIENT_AUDIENCE = ""
 AUTH0_CLIENT_URL = ""
 CLO_API_URL = ""
+AUTH0_TOKEN = ""
 
 
 def get_secret(secret_name: str):
@@ -137,7 +140,7 @@ def sync_codelinaro_project_costs(date_range: str):
     client = boto3.client("s3")
     try:
         response = client.get_object(
-            Bucket=RESULTS_BUCKET, # type: ignore
+            Bucket=RESULTS_BUCKET,  # type: ignore
             Key=f"{date_range}/project_costs.json"
         )
         json_file_reader = response['Body'].read()
@@ -260,18 +263,21 @@ def get_token_from_auth0() -> str:
     Returns:
         str: access token for CodeLinaro
     """
-    body = {
-        "client_id": AUTH0_CLIENT_ID,
-        "client_secret": AUTH0_CLIENT_SECRET_KEY,
-        "audience": AUTH0_CLIENT_AUDIENCE,
-        "grant_type": "client_credentials"
-    }
-    response = requests.post(
-        AUTH0_CLIENT_URL,
-        json=body
-    )
-    response.raise_for_status()
-    return response.json()["access_token"]
+    global AUTH0_TOKEN
+    if AUTH0_TOKEN == "":
+        body = {
+            "client_id": AUTH0_CLIENT_ID,
+            "client_secret": AUTH0_CLIENT_SECRET_KEY,
+            "audience": AUTH0_CLIENT_AUDIENCE,
+            "grant_type": "client_credentials"
+        }
+        response = requests.post(
+            AUTH0_CLIENT_URL,
+            json=body
+        )
+        response.raise_for_status()
+        AUTH0_TOKEN = response.json()["access_token"]
+    return AUTH0_TOKEN
 
 
 def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, previous_cost: Union[float, None], auth: str):
@@ -367,11 +373,57 @@ def initialise_codelinaro_globals():
     """Set the CodeLinaro globals from env vars
     """
     global AUTH0_CLIENT_AUDIENCE, AUTH0_CLIENT_URL, CLO_API_URL
-    secret_name = check_and_return("SECRET_NAME")
-    get_secret(secret_name)
+    secret_name = check_and_return("SECRET_NAME", "no-secret-name-available")
+    if secret_name != "no-secret-name-available":
+        get_secret(secret_name)
+    else:
+        global AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET_KEY, GITLAB_TOKEN
+        AUTH0_CLIENT_ID = check_and_return("AUTH0_CLIENT_ID")
+        AUTH0_CLIENT_SECRET_KEY = check_and_return("AUTH0_CLIENT_SECRET_KEY")
+        GITLAB_TOKEN = check_and_return("GITLAB_TOKEN")
     AUTH0_CLIENT_AUDIENCE = check_and_return("AUTH0_CLIENT_AUDIENCE")
     AUTH0_CLIENT_URL = check_and_return("AUTH0_CLIENT_URL")
     CLO_API_URL = check_and_return("CLO_API_URL")
+
+
+def get_project_details_from_efs_id(efs_id: str) -> Union[None, dict]:
+    found, data = get_data_from_cache(
+        "efs_details", efs_id, None, None
+    )
+    if not found:
+        auth_token = get_token_from_auth0()
+        header = {
+            "Authorization": f"Bearer {auth_token}"
+        }
+        url = f"{CLO_API_URL}/projects/systems/persistent-storage/{efs_id}"
+        response = requests.get(url, headers=header)
+        if response.status_code != 201:
+            output(
+                f"Got {response.status_code} when querying EFS ID {efs_id}", LogLevel.INFO
+            )
+            return None
+        # Get the project ID ...
+        data = response.json()
+        save_data_to_cache(
+            "efs_details", efs_id, None, None, data
+        )
+    return data
+
+
+def process_efs(row: dict):
+    # EFS is set up on CodeLinaro such there is a 1:1 relationship between
+    # the filing system and a GitLab project. That relationship is stored
+    # in CodeLinaro, so this function is for CodeLinaro use only.
+    fs_id = row[RESOURCE_ID].split("/")[1]
+    project_details = get_project_details_from_efs_id(fs_id)
+    if project_details is None:
+        add_to(UNALLOCATED_COSTS, row)
+        return
+    repo_id = project_details["repo_id"]
+    # Temporarily mark the cost as unallocated because we don't (yet)
+    # know which project to bill this against.
+    add_to(UNALLOCATED_COSTS, row)
+
 
 ###################################
 # END OF CODELINARO SPECIFIC CODE #
@@ -401,7 +453,7 @@ def output(string: str, level: LogLevel):
         PROCESSING_ERROR = True
     elif level == LogLevel.WARNING:
         string = f"Warning! {string}"
-    if LOG_STREAM_NAME == "":
+    if DEBUG_PROGRESS or LOG_STREAM_NAME == "":
         print(string)
         return
 
@@ -435,8 +487,8 @@ def output(string: str, level: LogLevel):
             return
         except ClientError as exc:
             if "Error" in exc.response and \
-                    "Code" in exc.response["Error"] and \
-                        exc.response['Error']['Code'] == 'ThrottlingException':
+                "Code" in exc.response["Error"] and \
+                    exc.response['Error']['Code'] == 'ThrottlingException':
                 time.sleep(3)
             else:
                 raise
@@ -542,23 +594,23 @@ def get_cur_s3_client() -> S3Client:
     if ASSUME_ROLE is None or ASSUME_ROLE == "":
         return boto3.client('s3')
 
-    # create an STS client object that represents a live connection to the 
+    # create an STS client object that represents a live connection to the
     # STS service
     sts_client = boto3.client('sts')
 
     # Call the assume_role method of the STSConnection object and pass the role
     # ARN and a role session name.
-    assumed_role_object=sts_client.assume_role(
+    assumed_role_object = sts_client.assume_role(
         RoleArn=ASSUME_ROLE,
         RoleSessionName="AssumeRoleSession1"
     )
 
-    # From the response that contains the assumed role, get the temporary 
+    # From the response that contains the assumed role, get the temporary
     # credentials that can be used to make subsequent API calls
-    credentials=assumed_role_object['Credentials']
+    credentials = assumed_role_object['Credentials']
 
-    # Use the temporary credentials that AssumeRole returns to make a 
-    # connection to Amazon S3  
+    # Use the temporary credentials that AssumeRole returns to make a
+    # connection to Amazon S3
     return boto3.client(
         's3',
         aws_access_key_id=credentials['AccessKeyId'],
@@ -590,20 +642,29 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
     content = {}
     try:
         json_object = s3.get_object(
-            Bucket=CUR_BUCKET, # type: ignore
+            Bucket=CUR_BUCKET,  # type: ignore
             Key=f"{CUR_PREFIX}/{date_range}/{manifest}")
         json_file_reader = json_object['Body'].read()
         content = json.loads(json_file_reader)
-    except s3.exceptions.from_code("NoSuchKey"): # type: ignore
+    except s3.exceptions.from_code("NoSuchKey"):  # type: ignore
         pass
     if "reportKeys" in content:
         return content["reportKeys"]
     return None
 
 
+def check_overrides():
+    """ Allow some globals to be overridden from environment variables """
+    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO
+    DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
+    DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
+    SAVE_TO_CODELINARO = check_and_return("OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
+
+
 def check_environment_variables():
     """ Get the variables for the CloudWatch log groups """
     global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL
+    check_overrides()
     CUR_BUCKET = check_and_return("CUR_BUCKET_NAME")
     CUR_PREFIX = check_and_return("CUR_PREFIX")
     ASSUME_ROLE = check_and_return("ASSUME_ROLE")
@@ -614,14 +675,10 @@ def check_environment_variables():
     GITLAB_URL = check_and_return("GITLAB_URL")
     if GITLAB_URL[-1] != "/":
         GITLAB_URL += "/"
-    if SAVE_TO_CODELINARO:
-        initialise_codelinaro_globals()
-    else:
-        global GITLAB_TOKEN
-        GITLAB_TOKEN = check_and_return("GITLAB_TOKEN")
+    initialise_codelinaro_globals()
 
 
-def check_and_return(os_var: str) -> str:
+def check_and_return(os_var: str, default: Union[None, str] = None) -> str:
     """Return the value of the specified os env var
 
     Args:
@@ -631,7 +688,9 @@ def check_and_return(os_var: str) -> str:
         str: value of the variable
     """
     if os_var not in os.environ:
-        sys.exit(f"{os_var} is not defined as an environment variable")
+        if default is None:
+            sys.exit(f"{os_var} is not defined as an environment variable")
+        return default
     return os.environ[os_var]
 
 
@@ -647,7 +706,7 @@ def process_s3_object(s3_key: list, date_range: str):
         output(f"Processing CUR file {key}", LogLevel.INFO)
         # Read in the CUR file and either add each cost to BASE, UNALLOCATED or
         # mark it as pending.
-        process_cur_report(CUR_BUCKET, key) # type: ignore
+        process_cur_report(CUR_BUCKET, key)  # type: ignore
 
     check_pending_volumes()
 
@@ -862,7 +921,8 @@ def save_to_s3(date_range: str, data: Type, filename: str):
     # Upload that file to S3
     if RESULTS_BUCKET is not None:
         client = boto3.client("s3")
-        client.upload_file(temp_filename, RESULTS_BUCKET, f"{date_range}/{filename}")
+        client.upload_file(temp_filename, RESULTS_BUCKET,
+                           f"{date_range}/{filename}")
     # Delete the temporary file
     os.remove(path=temp_filename)
 
@@ -881,14 +941,14 @@ def load_from_s3(date_range: str, filename: str, if_not_found: Union[None, dict]
     content = if_not_found
     if RESULTS_BUCKET is None:
         return content
-    
+
     s3 = boto3.client('s3')
     try:
         json_object = s3.get_object(
             Bucket=RESULTS_BUCKET, Key=f"{date_range}/{filename}")
         json_file_reader = json_object['Body'].read()
         content = json.loads(json_file_reader)
-    except s3.exceptions.from_code("NoSuchKey"): # type: ignore
+    except s3.exceptions.from_code("NoSuchKey"):  # type: ignore
         pass
     return content
 
@@ -1570,7 +1630,8 @@ def process_cur_report(s3_bucket: str, s3_key: str):
     if ASSUME_ROLE is None or ASSUME_ROLE == "":
         match_account = None
     else:
-        match_account = boto3.client('sts').get_caller_identity().get('Account')
+        match_account = boto3.client(
+            'sts').get_caller_identity().get('Account')
 
     s3 = get_cur_s3_client()
     response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
@@ -1591,11 +1652,11 @@ def process_cur_row(row: dict, match_account: Union[str, None]):
     if DEBUG:
         CUR_FILE.append(row)
     code = row[PRODUCT_CODE]
-        # There are lots of different line item types but only three
-        # relates to usage charges
+    # There are lots of different line item types but only three
+    # relates to usage charges
     if "Usage" not in row["lineItem/LineItemType"]:
         process_base_cost(row)
-    elif code in EXPECTED_BASED_COSTS:
+    elif code in EXPECTED_BASE_COSTS:
         process_base_cost(row)
     elif code == "AmazonEC2":
         process_ec2(row)
@@ -1603,6 +1664,8 @@ def process_cur_row(row: dict, match_account: Union[str, None]):
         process_eks(row)
     elif code == "AmazonS3":
         process_s3(row)
+    elif code == "AmazonEFS":
+        process_efs(row)
     else:
         add_to(UNALLOCATED_COSTS, row)
     CUR_FILE_ROW_COUNT += 1
@@ -1811,7 +1874,7 @@ def process_s3(row: dict):
     # underlying "requests" costs but (a) they are quite small and (b) it
     # doesn't seem to be feasible to associate them with a given project.
     if row[RESOURCE_ID] == CACHE_BUCKET and \
-            row[USAGE_TYPE] == "TimedStorage-ByteHrs":
+            "TimedStorage-ByteHrs" in row[USAGE_TYPE]:
         process_s3_storage_costs(row)
     else:
         add_to(BASE_COSTS, row, key=resource_id_key(row))
@@ -2040,7 +2103,7 @@ def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS, # type: ignore
+        logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2111,7 +2174,7 @@ def ec2_node_hostname(resource_id: str, start_time: datetime.datetime, end_time:
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS, # type: ignore
+        logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2279,7 +2342,7 @@ def ci_ids_from_runner_logs(runner_name: str, start_time: Union[datetime.datetim
 
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS, # type: ignore
+        logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
@@ -2438,7 +2501,7 @@ def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], en
     ip_address = None
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_CLUSTER_LOGS, # type: ignore
+        logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=(
@@ -2516,7 +2579,7 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
     )
     client = boto3.client('logs')
     response = client.start_query(
-        logGroupName=CW_VPC_FLOW_LOGS, # type: ignore
+        logGroupName=CW_VPC_FLOW_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
         endTime=int(end_time.timestamp()),
         queryString=query_string
