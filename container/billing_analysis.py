@@ -156,6 +156,64 @@ def sync_codelinaro_project_costs(date_range: str):
     for project in PROJECT_COSTS:
         compare_project_costs(previous_data, auth_token, project)
         compare_cache_costs(previous_data, year_month, auth_token, project)
+        compare_persistent_storage_costs(previous_data, year_month, auth_token, project)
+
+
+def compare_persistent_storage_costs(previous_data: list, year_month: str, auth_token: str, project: dict):
+    # The big difference between peristent storage costs and cache costs is that a repo
+    # can, over its lifetime, have multiple filing systems associated with it.
+    # "previous_cost" is therefore a dictionary of EFS IDs (key) and cost (value) so we have to iterate
+    # through that and save against the ID.
+    if "persistent_storage_cost" in project:
+        project_id = project["project_id"]
+        storage_cost = project["persistent_storage_cost"]
+        previous_cost = get_previous_persistent_storage_cost(previous_data, project_id)
+        for fs_id in storage_cost:
+            prev_cost = previous_cost[fs_id] if fs_id in previous_cost else None
+            save_codelinaro_persistent_storage_cost(
+                project_id, year_month, storage_cost[fs_id], fs_id, prev_cost, auth_token)
+        
+
+def get_previous_persistent_storage_cost(data: list, project_id: str) -> dict:
+    for project in data:
+        if project["project_id"] == project_id:
+            return project.get("persistent_storage_cost", {})
+    return {}
+
+
+def save_codelinaro_persistent_storage_cost(
+        project_id: str, year_month: str, storage_cost: float, fs_id: str, previous_cost: Union[float, None], auth: str):
+    if previous_cost is not None and equal_to_x_dp(storage_cost, previous_cost):
+        output(
+            f"Skipping persistent storage cost for {project_id} because it hasn't changed from last time", LogLevel.INFO
+        )
+        return
+
+    if previous_cost is None:
+        previously = ""
+    else:
+        previously = f", previously {previous_cost:.10f}"
+
+    output(
+        f"Saving cost ({storage_cost:.10f}{previously}) of {project_id}/storage to CodeLinaro API", LogLevel.INFO)
+    body = {
+        "repo_id": project_id,
+        "filesystem_id": fs_id,
+        "date": year_month,
+        "cost": storage_cost,
+        "adjusted_cost": storage_cost
+    }
+    url = f"{CLO_API_URL}/CI/persistent-storage/cost"
+    header = {
+        "Authorization": f"Bearer {auth}"
+    }
+    response = requests.post(
+        url,
+        headers=header,
+        json=body
+    )
+    response.raise_for_status()
+
 
 
 def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, project: dict):
@@ -198,14 +256,12 @@ def compare_project_costs(previous_data: list, auth_token: str, project: dict):
                 pipeline_id = pipeline["pipeline_id"]
                 job_id = job["job_id"]
                 job_cost = job["cost"]
-                previous_cost = get_previous_cost(
-                    previous_data, project_id, pipeline_id, job_id)
                 save_codelinaro_job_cost(
-                    project_id, pipeline_id, job_id, job_cost, previous_cost, auth_token)
+                    project_id, pipeline_id, job_id, job_cost, previous_data, auth_token)
 
 
-def get_previous_cost(data: list, project_id: str, pipeline_id: str, job_id: str) -> Union[float, None]:
-    """Find the previous cost, if there is one, for this job
+def get_job_object(data: list, project_id: str, pipeline_id: str, job_id: str) -> dict:
+    """Find the job blob that contains the cost and possibly adjusted cost data
 
     Args:
         data (list): the costs saved from the previous run
@@ -214,14 +270,14 @@ def get_previous_cost(data: list, project_id: str, pipeline_id: str, job_id: str
         job_id (str): ID for the CI job to retrieve the costs for
 
     Returns:
-        Union[float, None]: previous cost or None if there wasn't one
+        dict: dictionary holding the cost and adjusted cost data
     """
     project = iterate_to_find(data, "project_id", project_id)
     pipelines = project.get("pipelines", [])
     pipeline = iterate_to_find(pipelines, "pipeline_id", pipeline_id)
     jobs = pipeline.get("jobs", [])
     job = iterate_to_find(jobs, "job_id", job_id)
-    return job.get("cost", None)
+    return job
 
 
 def iterate_to_find(data: list, identifier: str, value: str) -> dict:
@@ -280,7 +336,7 @@ def get_token_from_auth0() -> str:
     return AUTH0_TOKEN
 
 
-def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, previous_cost: Union[float, None], auth: str):
+def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, previous_data: list, auth: str):
     """Call the CodeLinaro API to save the job cost
 
     Args:
@@ -291,13 +347,20 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
         previous_cost (Union[float, None]): the previous cost or None if there isn't one
         auth (str): API access token
     """
+    # Get the previous cost data if there is any
+    job_data = get_job_object(previous_data, project_id, pipeline_id, job_id)
+    previous_cost = job_data.get("cost", None)
+    previous_adjusted_cost = job_data.get("adjusted_cost", None)
+
     if project_id is None or pipeline_id is None or job_id is None:
         if DEBUG:
             output(
                 f"Skipping cost ({job_cost:.10f}) because one or more of {project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
         return
 
-    if previous_cost is not None and equal_to_x_dp(job_cost, previous_cost):
+    adjusted_cost = job_cost # * float(MARKUP) / 100
+
+    if previous_adjusted_cost is not None and previous_cost is not None and equal_to_x_dp(job_cost, previous_cost) and equal_to_x_dp(adjusted_cost, previous_adjusted_cost):
         if DEBUG:
             output(
                 f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because it hasn't changed from last time", LogLevel.INFO)
@@ -306,16 +369,22 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     if previous_cost is None:
         previously = ""
     else:
-        previously = f", previously {previous_cost:.10f}"
+        previously = f", previous cost {previous_cost:.10f}"
 
     if DEBUG:
         output(
             f"Saving cost ({job_cost:.10f}{previously}) of {project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
+    
+    # Save the adjusted cost away in the job data blob so that it then gets saved
+    # in the S3 cache file for future checking.
+    job_data["adjusted_cost"] = adjusted_cost
+
     body = {
         "repoID": project_id,
         "pipelineID": pipeline_id,
         "jobID": job_id,
-        "cost": job_cost
+        "cost": job_cost,
+        "adjustedCost": adjusted_cost
     }
     header = {
         "Authorization": f"Bearer {auth}"
@@ -397,13 +466,15 @@ def get_project_details_from_efs_id(efs_id: str) -> Union[None, dict]:
         }
         url = f"{CLO_API_URL}/projects/systems/persistent-storage/{efs_id}"
         response = requests.get(url, headers=header)
-        if response.status_code != 201:
+        if response.status_code > 299:
             output(
-                f"Got {response.status_code} when querying EFS ID {efs_id}", LogLevel.INFO
+                f"Got {response.status_code} when querying EFS ID {efs_id} ({response.text})", LogLevel.INFO
             )
             return None
-        # Get the project ID ...
         data = response.json()
+        # The API returns "repo_id" as a number, not a string. Correct that here
+        # so that we have consistency going forwards.
+        data["repo_id"] = str(data["repo_id"])
         save_data_to_cache(
             "efs_details", efs_id, None, None, data
         )
@@ -420,9 +491,26 @@ def process_efs(row: dict):
         add_to(UNALLOCATED_COSTS, row)
         return
     repo_id = project_details["repo_id"]
-    # Temporarily mark the cost as unallocated because we don't (yet)
-    # know which project to bill this against.
-    add_to(UNALLOCATED_COSTS, row)
+
+    global TOTAL_ALLOCATED
+    storage_cost = float(row[UNBLENDED_COST])
+    project_in_list = find_dict_in_list(
+        PROJECT_COSTS,
+        "project_id",
+        repo_id
+    )
+    if "project_id" not in project_in_list:
+        project_in_list["project_id"] = repo_id
+    if "persistent_storage_cost" not in project_in_list:
+        project_in_list["persistent_storage_cost"] = {}
+    costs = project_in_list["persistent_storage_cost"]
+    if fs_id not in costs:
+        costs[fs_id] = 0.0
+    costs[fs_id] += storage_cost
+    output(
+        f"Project {repo_id} EFS usage ({fs_id}) cost {storage_cost}", LogLevel.INFO
+    )
+    processed_this_row(row)
 
 
 ###################################
