@@ -212,6 +212,9 @@ def save_codelinaro_persistent_storage_cost(
         headers=header,
         json=body
     )
+    if response.status_code > 299:
+        output("Saving CI persistent storage cost failed. Payload was:", LogLevel.INFO)
+        output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -331,6 +334,9 @@ def get_token_from_auth0() -> str:
             AUTH0_CLIENT_URL,
             json=body
         )
+        if response.status_code > 299:
+            output("Getting Auth0 token failed. Payload was:", LogLevel.INFO)
+            output(json.dumps(body), LogLevel.INFO)
         response.raise_for_status()
         AUTH0_TOKEN = response.json()["access_token"]
     return AUTH0_TOKEN
@@ -395,6 +401,9 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
         headers=header,
         json=body
     )
+    if response.status_code > 299:
+        output("Saving CI job cost failed. Payload was:", LogLevel.INFO)
+        output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -424,7 +433,8 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
     body = {
         "repoID": project_id,
         "date": year_month,
-        "cost": cache_cost
+        "cost": cache_cost,
+        "adjusted_cost": cache_cost
     }
     url = f"{CLO_API_URL}/ci/cache"
     header = {
@@ -435,6 +445,9 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
         headers=header,
         json=body
     )
+    if response.status_code > 299:
+        output("Saving CI cache cost failed. Payload was:", LogLevel.INFO)
+        output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
