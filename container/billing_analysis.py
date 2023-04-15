@@ -127,7 +127,7 @@ def get_secret(secret_name: str):
     AUTH0_CLIENT_SECRET_KEY = secret["AUTH0_CLIENT_SECRET_KEY"]
     GITLAB_TOKEN = secret["GITLAB_TOKEN"]
     if "PRICE_LIST" in secret:
-        PRICE_LIST = secret["PRICE_LIST"]
+        PRICE_LIST = json.loads(secret["PRICE_LIST"])
 
 
 def sync_codelinaro_project_costs(date_range: str):
@@ -1527,6 +1527,31 @@ def get_ec2_rate(row: dict) -> float:
     return 0.0
 
 
+def get_fargate_rate(row: dict) -> float:
+    unblended_rate = row["lineItem/UnblendedRate"]
+    if PRICE_LIST is None:
+        return float(unblended_rate)
+    # For Fargate data transfers, use the network piece of the price list.
+    if row[USAGE_TYPE].endswith("DataTransfer-Regional-Bytes"):
+        return get_network_rate(row)
+    # Fargate costs consist of memory and CPU. To make life easier, if
+    # we're using a price list, we rate the memory costs at 0.0 and just
+    # charge for the number of CPUs being used.
+    if row[USAGE_TYPE].endswith("Fargate-GB-Hours"):
+        return 0.0
+    # The CUR doesn't tell us how many vCPUs were used, and there isn't
+    # an easy way to determine that. So, instead, we take the AWS unblended
+    # rate and use that as the key into the price list.
+    if "fargate" in PRICE_LIST and unblended_rate in PRICE_LIST["fargate"]:
+        return PRICE_LIST["fargate"][unblended_rate]
+    
+    # If we don't match, log it as an error but still return a number so
+    # that processing continues.
+    output(f"Failed to match fargate cost {unblended_rate} in price list", LogLevel.ERROR)
+    print(json.dumps(row))
+    return float(unblended_rate)
+
+
 def add_project_build_cost(job_data: list, row: dict, source: str):
     """Add this row's costs to the specified project/build(s)
 
@@ -1544,6 +1569,8 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
         rate = get_volume_rate(row)
     elif source == "network":
         rate = get_network_rate(row)
+    elif source == "Fargate":
+        rate = get_fargate_rate(row)
     else:
         print(source)
         print(json.dumps(row))
