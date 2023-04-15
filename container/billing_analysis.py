@@ -51,19 +51,20 @@ GITLAB_URL = None
 GITLAB_TOKEN = ""
 LOG_STREAM_NAME = ""
 LOG_STREAM_TOKEN = None
+PRICE_LIST = None
 
 # Constants for frequently used strings, to keep Sonar happy.
-UNBLENDED_COST = "lineItem/UnblendedCost"
+ANALYSIS_LOG_GROUP = "ci-billing-analysis"
 INSTANCE_ID = "resourceTags/user:InstanceID"
 LINE_ITEM_ID = "identity/LineItemId"
 NODEGROUP_NAME_TAG = "resourceTags/user:eks:nodegroup-name"
 PRODUCT_CODE = "lineItem/ProductCode"
+PROVISIONER_NAME = "karpenter.sh/provisioner-name/"
 RESOURCE_ID = "lineItem/ResourceId"
+UNBLENDED_COST = "lineItem/UnblendedCost"
 USAGE_START_DATE = "lineItem/UsageStartDate"
 USAGE_TYPE = "lineItem/UsageType"
 USER_NAME_TAG = "resourceTags/user:Name"
-PROVISIONER_NAME = "karpenter.sh/provisioner-name/"
-ANALYSIS_LOG_GROUP = "ci-billing-analysis"
 
 EXPECTED_BASE_COSTS = [
     "awskms",
@@ -108,7 +109,7 @@ def get_secret(secret_name: str):
     Raises:
         e: any unhandled exception - not sure why as it doesn't catch any
     """
-    global AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET_KEY, GITLAB_TOKEN
+    global AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET_KEY, GITLAB_TOKEN, PRICE_LIST
     client = boto3.client('secretsmanager')
 
     try:
@@ -125,6 +126,8 @@ def get_secret(secret_name: str):
     AUTH0_CLIENT_ID = secret["AUTH0_CLIENT_ID"]
     AUTH0_CLIENT_SECRET_KEY = secret["AUTH0_CLIENT_SECRET_KEY"]
     GITLAB_TOKEN = secret["GITLAB_TOKEN"]
+    if "PRICE_LIST" in secret:
+        PRICE_LIST = secret["PRICE_LIST"]
 
 
 def sync_codelinaro_project_costs(date_range: str):
@@ -167,23 +170,26 @@ def compare_persistent_storage_costs(previous_data: list, year_month: str, auth_
     if "persistent_storage_cost" in project:
         project_id = project["project_id"]
         storage_cost = project["persistent_storage_cost"]
+        pricelist_cost = project["persistent_storage_pricelist_cost"]
         previous_cost = get_previous_persistent_storage_cost(previous_data, project_id)
+        previous_pricelist_cost = get_previous_persistent_storage_cost(previous_data, project_id, "persistent_storage_pricelist_cost")
         for fs_id in storage_cost:
             prev_cost = previous_cost[fs_id] if fs_id in previous_cost else None
+            prev_pricelist_cost = previous_pricelist_cost[fs_id] if fs_id in previous_pricelist_cost else None
             save_codelinaro_persistent_storage_cost(
-                project_id, year_month, storage_cost[fs_id], fs_id, prev_cost, auth_token)
+                project_id, year_month, storage_cost[fs_id], pricelist_cost[fs_id], fs_id, prev_cost, prev_pricelist_cost, auth_token)
         
 
-def get_previous_persistent_storage_cost(data: list, project_id: str) -> dict:
+def get_previous_persistent_storage_cost(data: list, project_id: str, key: str="persistent_storage_cost") -> dict:
     for project in data:
         if project["project_id"] == project_id:
-            return project.get("persistent_storage_cost", {})
+            return project.get(key, {})
     return {}
 
 
 def save_codelinaro_persistent_storage_cost(
-        project_id: str, year_month: str, storage_cost: float, fs_id: str, previous_cost: Union[float, None], auth: str):
-    if previous_cost is not None and equal_to_x_dp(storage_cost, previous_cost):
+        project_id: str, year_month: str, storage_cost: float, pricelist_cost: float, fs_id: str, previous_cost: Union[float, None], previous_pricelist_cost: Union[float, None], auth: str):
+    if previous_cost is not None and previous_pricelist_cost is not None and equal_to_x_dp(storage_cost, previous_cost) and equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
         output(
             f"Skipping persistent storage cost for {project_id} because it hasn't changed from last time", LogLevel.INFO
         )
@@ -201,7 +207,7 @@ def save_codelinaro_persistent_storage_cost(
         "filesystem_id": fs_id,
         "date": year_month,
         "cost": storage_cost,
-        "adjusted_cost": storage_cost
+        "adjusted_cost": pricelist_cost
     }
     url = f"{CLO_API_URL}/CI/persistent-storage/cost"
     header = {
@@ -231,9 +237,10 @@ def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, p
     if "cache_cost" in project:
         project_id = project["project_id"]
         cache_cost = project["cache_cost"]
-        previous_cost = get_previous_cache_cost(previous_data, project_id)
+        cache_pricelist_cost = project["cache_pricelist_cost"]
+        previous_cost, previous_pricelist_cost = get_previous_cache_cost(previous_data, project_id)
         save_codelinaro_project_cache_cost(
-            project_id, year_month, cache_cost, previous_cost, auth_token)
+            project_id, year_month, cache_cost, cache_pricelist_cost, previous_cost, previous_pricelist_cost, auth_token)
 
 
 def compare_project_costs(previous_data: list, auth_token: str, project: dict):
@@ -259,8 +266,9 @@ def compare_project_costs(previous_data: list, auth_token: str, project: dict):
                 pipeline_id = pipeline["pipeline_id"]
                 job_id = job["job_id"]
                 job_cost = job["cost"]
+                pricelist_cost = job["pricelist_cost"]
                 save_codelinaro_job_cost(
-                    project_id, pipeline_id, job_id, job_cost, previous_data, auth_token)
+                    project_id, pipeline_id, job_id, job_cost, pricelist_cost, previous_data, auth_token)
 
 
 def get_job_object(data: list, project_id: str, pipeline_id: str, job_id: str) -> dict:
@@ -300,7 +308,7 @@ def iterate_to_find(data: list, identifier: str, value: str) -> dict:
     return {}
 
 
-def get_previous_cache_cost(data: list, project_id: str) -> Union[float, None]:
+def get_previous_cache_cost(data: list, project_id: str) -> Tuple[Union[float, None], Union[float, None]]:
     """Find the previous cache cost, if there is one, for this project
 
     Args:
@@ -312,8 +320,10 @@ def get_previous_cache_cost(data: list, project_id: str) -> Union[float, None]:
     """
     for project in data:
         if project["project_id"] == project_id:
-            return project.get("cache_cost", None)
-    return None
+            cache_cost = project.get("cache_cost", None)
+            cache_pricelist_cost = project.get("cache_pricelist_cost", None)
+            return cache_cost, cache_pricelist_cost
+    return None, None
 
 
 def get_token_from_auth0() -> str:
@@ -342,7 +352,7 @@ def get_token_from_auth0() -> str:
     return AUTH0_TOKEN
 
 
-def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, previous_data: list, auth: str):
+def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, pricelist_cost: float, previous_data: list, auth: str):
     """Call the CodeLinaro API to save the job cost
 
     Args:
@@ -356,7 +366,7 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     # Get the previous cost data if there is any
     job_data = get_job_object(previous_data, project_id, pipeline_id, job_id)
     previous_cost = job_data.get("cost", None)
-    previous_adjusted_cost = job_data.get("adjusted_cost", None)
+    previous_pricelist_cost = job_data.get("pricelist_cost", None)
 
     if project_id is None or pipeline_id is None or job_id is None:
         if DEBUG:
@@ -364,9 +374,7 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
                 f"Skipping cost ({job_cost:.10f}) because one or more of {project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
         return
 
-    adjusted_cost = job_cost # * float(MARKUP) / 100
-
-    if previous_adjusted_cost is not None and previous_cost is not None and equal_to_x_dp(job_cost, previous_cost) and equal_to_x_dp(adjusted_cost, previous_adjusted_cost):
+    if previous_pricelist_cost is not None and previous_cost is not None and equal_to_x_dp(job_cost, previous_cost) and equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
         if DEBUG:
             output(
                 f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because it hasn't changed from last time", LogLevel.INFO)
@@ -381,16 +389,12 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
         output(
             f"Saving cost ({job_cost:.10f}{previously}) of {project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
     
-    # Save the adjusted cost away in the job data blob so that it then gets saved
-    # in the S3 cache file for future checking.
-    job_data["adjusted_cost"] = adjusted_cost
-
     body = {
         "repoID": project_id,
         "pipelineID": pipeline_id,
         "jobID": job_id,
         "cost": job_cost,
-        "adjustedCost": adjusted_cost
+        "adjustedCost": pricelist_cost
     }
     header = {
         "Authorization": f"Bearer {auth}"
@@ -407,7 +411,7 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     response.raise_for_status()
 
 
-def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_cost: float, previous_cost: Union[float, None], auth: str):
+def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_cost: float, cache_pricelist_cost: float, previous_cost: Union[float, None], previous_pricelist_cost: Union[float, None], auth: str):
     """Call the CodeLinaro API to save the cache cost
 
     Args:
@@ -417,7 +421,7 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
         previous_cost (Union[float, None]): previous cost or None if there wasn't one
         auth (str): API access token
     """
-    if previous_cost is not None and equal_to_x_dp(cache_cost, previous_cost):
+    if previous_pricelist_cost is not None and previous_cost is not None and equal_to_x_dp(cache_cost, previous_cost) and equal_to_x_dp(cache_pricelist_cost, previous_pricelist_cost):
         output(
             f"Skipping cache cost for {project_id} because it hasn't changed from last time", LogLevel.INFO
         )
@@ -434,7 +438,7 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
         "repoID": project_id,
         "date": year_month,
         "cost": cache_cost,
-        "adjusted_cost": cache_cost
+        "adjusted_cost": cache_pricelist_cost
     }
     url = f"{CLO_API_URL}/ci/cache"
     header = {
@@ -506,6 +510,11 @@ def process_efs(row: dict):
     repo_id = project_details["repo_id"]
 
     global TOTAL_ALLOCATED
+    if PRICE_LIST is None or "efs" not in PRICE_LIST:
+        pricelist_rate = float(row["lineItem/UnblendedRate"])
+    else:
+        pricelist_rate = float(PRICE_LIST["efs"])
+    pricelist_cost = pricelist_rate * float(row["lineItem/UsageAmount"])
     storage_cost = float(row[UNBLENDED_COST])
     project_in_list = find_dict_in_list(
         PROJECT_COSTS,
@@ -516,14 +525,21 @@ def process_efs(row: dict):
         project_in_list["project_id"] = repo_id
     if "persistent_storage_cost" not in project_in_list:
         project_in_list["persistent_storage_cost"] = {}
-    costs = project_in_list["persistent_storage_cost"]
-    if fs_id not in costs:
-        costs[fs_id] = 0.0
-    costs[fs_id] += storage_cost
+    if "persistent_storage_pricelist_cost" not in project_in_list:
+        project_in_list["persistent_storage_pricelist_cost"] = {}
+    add_to_efs_cost(project_in_list, "persistent_storage_cost", fs_id, storage_cost)
+    add_to_efs_cost(project_in_list, "persistent_storage_pricelist_cost", fs_id, pricelist_cost)
     output(
         f"Project {repo_id} EFS usage ({fs_id}) cost {storage_cost}", LogLevel.INFO
     )
     processed_this_row(row)
+
+
+def add_to_efs_cost(project_in_list: dict, key: str, fs_id: str, amount: float):
+    costs = project_in_list[key]
+    if fs_id not in costs:
+        costs[fs_id] = 0.0
+    costs[fs_id] += amount
 
 
 ###################################
@@ -764,7 +780,7 @@ def check_overrides():
 
 def check_environment_variables():
     """ Get the variables for the CloudWatch log groups """
-    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL
+    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL, PRICE_LIST
     check_overrides()
     CUR_BUCKET = check_and_return("CUR_BUCKET_NAME")
     CUR_PREFIX = check_and_return("CUR_PREFIX")
@@ -777,6 +793,14 @@ def check_environment_variables():
     if GITLAB_URL[-1] != "/":
         GITLAB_URL += "/"
     initialise_codelinaro_globals()
+    if PRICE_LIST is None:
+        dir_path = os.path.dirname(os.path.abspath(__file__))
+        if os.path.exists(f"{dir_path}/price_list.json"):
+            with open(f"{dir_path}/price_list.json", "rb") as f:
+                PRICE_LIST= json.load(f)
+                output("Price list loaded from file", LogLevel.INFO)
+        else:
+            print(f"No price list found in {dir_path}")
 
 
 def check_and_return(os_var: str, default: Union[None, str] = None) -> str:
@@ -1372,7 +1396,7 @@ def find_dict_in_list(list_to_check: list, dict_key: str, dict_value: str) -> di
     return new_dict
 
 
-def add_cost_to_project(project_id: str, pipeline_id: str, job_id: str, cost: float):
+def add_cost_to_project(project_id: str, pipeline_id: str, job_id: str, cost: float, pricelist_cost: float):
     """Add the cost to the specified project/build
 
     Args:
@@ -1412,8 +1436,10 @@ def add_cost_to_project(project_id: str, pipeline_id: str, job_id: str, cost: fl
     # Was it newly created?
     job_in_list.setdefault("job_id", job_id)
     job_in_list.setdefault("cost", 0.0)
+    job_in_list.setdefault("pricelist_cost", 0.0)
 
     job_in_list["cost"] += cost
+    job_in_list["pricelist_cost"] += pricelist_cost
     TOTAL_ALLOCATED += cost
 
 
@@ -1447,6 +1473,60 @@ def job_times_for_slot(row: dict, job: dict) -> Tuple[Union[None, datetime.datet
     return job_start, job_end
 
 
+def get_volume_rate(row: dict) -> float:
+    if PRICE_LIST is None or "ephemeral" not in PRICE_LIST:
+        return float(row["lineItem/UnblendedRate"])
+    # Just one ephemeral rate supported in the price list
+    return PRICE_LIST["ephemeral"]
+
+
+def get_network_rate(row: dict) -> float:
+    if PRICE_LIST is None:
+        return float(row["lineItem/UnblendedRate"])
+    usage_type = row[USAGE_TYPE]
+    network_prices = PRICE_LIST["network"]
+    for key in network_prices:
+        if usage_type.endswith(key):
+            return network_prices[key]
+    # If the AWS cost is zero, return that.
+    if float(row["lineItem/UnblendedRate"]) == 0.0:
+        return 0.0
+
+    output(f"Unknown network cost type: {usage_type}", LogLevel.ERROR)
+    print(json.dumps(row))
+    return float(row["lineItem/UnblendedRate"])
+
+
+def get_ec2_rate(row: dict) -> float:
+    if PRICE_LIST is None:
+        return float(row["lineItem/UnblendedRate"])
+    # Call boto3 ec2 client to get instance information
+    ec2 = boto3.client('ec2')
+    instance_type = row["product/instanceType"]
+    response = ec2.describe_instance_types(InstanceTypes=[instance_type])
+    # We're only asking for one instance type, so we'll only have one
+    instance = response["InstanceTypes"][0]
+    # Get the architecture type first
+    if "ProcessorInfo" in instance and "SupportedArchitectures" in instance["ProcessorInfo"]:
+        arch = instance["ProcessorInfo"]["SupportedArchitectures"][0]
+    else:
+        output(f"No processor info found for instance type {instance_type}", LogLevel.ERROR)
+        return 0.0
+    # Is there a GPU on this instance?
+    if "GpuInfo" in instance and "Gpus" in instance["GpuInfo"]:
+        arch = arch + "_gpu"
+    # Do we know about the vCPUs?
+    if "VCpuInfo" in instance and "DefaultVCpus" in instance["VCpuInfo"]:
+        vcpus = str(instance["VCpuInfo"]["DefaultVCpus"])
+        if arch in PRICE_LIST and vcpus in PRICE_LIST[arch]:
+            return PRICE_LIST[arch][vcpus]
+        else:
+            output(f"Failed to match arch {arch} and vCPUs {vcpus} in price list ({instance_type})", LogLevel.ERROR)
+            return 0.0
+    output(f"No vCPUs found for instance type {instance_type}", LogLevel.ERROR)
+    return 0.0
+
+
 def add_project_build_cost(job_data: list, row: dict, source: str):
     """Add this row's costs to the specified project/build(s)
 
@@ -1457,8 +1537,21 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
     """
     if row[LINE_ITEM_ID] == "":
         return
+    
+    if source == "instance":
+        rate = get_ec2_rate(row)
+    elif source == "volume":
+        rate = get_volume_rate(row)
+    elif source == "network":
+        rate = get_network_rate(row)
+    else:
+        print(source)
+        print(json.dumps(row))
+        sys.exit(0)
 
-    blended_cost = float(row[UNBLENDED_COST])
+    pricelist_cost = rate * float(row["lineItem/UsageAmount"])
+    unblended_cost = float(row[UNBLENDED_COST])
+
     if len(job_data) > 1:
         # Need to apportion the cost based on the usage time for each
         # of the jobs.
@@ -1474,14 +1567,17 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
             output(
                 f"{len(job_data)} jobs to process for {source} with overall time {overall_time}", LogLevel.DEBUG)
             job_cost_sum = 0.0
+            job_pricelist_sum = 0.0
             for job in job_data:
                 job_start, job_end = job_times_for_slot(row, job)
                 if job_start is not None and job_end is not None:
                     time_spent = job_end - job_start
-                    job_cost = blended_cost * time_spent / overall_time
+                    job_cost = unblended_cost * time_spent / overall_time
+                    job_pricelist_cost = pricelist_cost * time_spent / overall_time
                     add_cost_to_project(
-                        job["project_id"], job["pipeline_id"], job["job_id"], job_cost)
+                        job["project_id"], job["pipeline_id"], job["job_id"], job_cost, job_pricelist_cost)
                     job_cost_sum += job_cost
+                    job_pricelist_sum += job_pricelist_cost
             # The * / calculations can, over enough calculations, cause a rounding difference.
             # We'll add any difference detected between job_cost_sum and blended_cost to
             # the first job (safest approach as we know it exists).
@@ -1489,12 +1585,12 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
             # We're talking really small amounts of money so, overall, it doesn't make
             # any difference - it is just to shut up the safety net logic elsewhere in
             # the script.
-            difference = blended_cost - job_cost_sum
             add_cost_to_project(
                 job_data[0]["project_id"],
                 job_data[0]["pipeline_id"],
                 job_data[0]["job_id"],
-                difference
+                unblended_cost - job_cost_sum,
+                pricelist_cost - job_pricelist_sum,
             )
         else:
             # This *shouldn't* happen. For a given resource, if there was a runner on it,
@@ -1504,7 +1600,7 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
     else:
         # Only one job on this instance so they pay for everything
         add_cost_to_project(
-            job_data[0]["project_id"], job_data[0]["pipeline_id"], job_data[0]["job_id"], blended_cost)
+            job_data[0]["project_id"], job_data[0]["pipeline_id"], job_data[0]["job_id"], unblended_cost, pricelist_cost)
     processed_this_row(row)
 
 
@@ -1636,7 +1732,7 @@ def process_pending_fargate_costs(start_time: str, network_total_cost: float, na
                 output(
                     f"Job {project}/{pipeline}/{job} used {perc:.2f}% of the NAT traffic", LogLevel.INFO)
                 cost = (network_total_cost * perc / 100.0)
-                add_cost_to_project(project, pipeline, job, cost)
+                add_cost_to_project(project, pipeline, job, cost, cost)
 
     # The network cost has been shared out across the various Fargate projects, so nothing left
     # to add to the base cost.
@@ -2696,6 +2792,11 @@ def process_s3_storage_costs(row: dict):
         row (dict): CUR file row
     """
     global TOTAL_ALLOCATED
+    if PRICE_LIST is None or "s3" not in PRICE_LIST:
+        pricelist_rate = float(row["lineItem/UnblendedRate"])
+    else:
+        pricelist_rate = float(PRICE_LIST["s3"])
+    pricelist_cost = pricelist_rate * float(row["lineItem/UsageAmount"])
     cache_cost = float(row[UNBLENDED_COST])
     project_cache_usage = {}
     total_cache_usage = 0
@@ -2727,8 +2828,11 @@ def process_s3_storage_costs(row: dict):
             project_in_list["project_id"] = proj
         if "cache_cost" not in project_in_list:
             project_in_list["cache_cost"] = 0.0
+        if "cache_pricelist_cost" not in project_in_list:
+            project_in_list["cache_pricelist_cost"] = 0.0
         cost = (cache_cost * perc / 100.0)
         project_in_list["cache_cost"] += cost
+        project_in_list["cache_pricelist_cost"] += (pricelist_cost * perc / 100.0)
         TOTAL_ALLOCATED += cost
     processed_this_row(row)
 

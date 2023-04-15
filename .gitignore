@@ -1,3 +1,11 @@
 /Pipfile.lock
 /container/ci.sh
 /ci-access-policy.json
+/ci-auth0.sh
+/ci-dev-access-policy.json
+/ci-dev.sh
+/ci-prod-access-policy.json
+/ci-prod.sh
+/run-dev.sh
+/run-prod.sh
+/.vscode

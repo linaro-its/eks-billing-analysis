@@ -1,6 +1,6 @@
 # EKS Billing Analysis
 
-The EKS Billing Analysis script looks at Cost & Usage Reports for this month and last month and breaks down the AWS infrastructure costs to apportion them to specific GitLab projects/pipelines/jobs or to base costs.
+The EKS Billing Analysis script looks at Cost & Usage Reports for this month and last month and breaks down the AWS infrastructure costs to apportion them to specific GitLab projects/pipelines/jobs or to base costs. The script can operate on a "pass-through" basis or it can use a price list based on the number of CPUs used. A sample price list JSON file is in this repo. The price list **must** quote prices based on per-hour usage, just as AWS does.
 
 The script is packaged into a Docker container and then configured as a Kubernetes cron job, running on one of the permanent nodes in the infrastructure.
 
@@ -10,7 +10,7 @@ Create a S3 bucket to store the results from the billing script.
 
 ### CodeLinaro setup
 
-In the same region as the EKS cluster, create a secret (e.g. `eks-billing-analysis`) with values for `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET_KEY` and `GITLAB_TOKEN`.
+In the same region as the EKS cluster, create a secret (e.g. `eks-billing-analysis`) with values for `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET_KEY`, `GITLAB_TOKEN`, `PRICE_LIST`.
 
 ### Template file setup
 
