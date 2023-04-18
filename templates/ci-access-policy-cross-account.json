@@ -20,7 +20,8 @@
                 "logs:DescribeLogGroups",
                 "logs:StartQuery",
                 "logs:GetQueryResults",
-                "ec2:DescribeNatGateways"
+                "ec2:DescribeNatGateways",
+                "ec2:DescribeInstanceTypes"
             ],
             "Resource": "*"
         },
