@@ -44,7 +44,7 @@ DEBUG_EC2NW_COSTS = False
 # Set to True if using the CodeLinaro APIs to save the costs.
 SAVE_TO_CODELINARO = True
 
-WARNINGS = True
+SUPPRESS_WARNINGS = True
 
 CUR_BUCKET = None
 CUR_PREFIX = None
@@ -604,7 +604,7 @@ def output(string: str, level: LogLevel):
     global SUPPRESSED_WARNING_COUNT, PROCESSING_ERROR, LOG_STREAM_TOKEN
     if level == LogLevel.DEBUG and not DEBUG:
         return
-    if WARNINGS and level == LogLevel.WARNING:
+    if SUPPRESS_WARNINGS and level == LogLevel.WARNING:
         SUPPRESSED_WARNING_COUNT += 1 # pylint: disable=undefined-variable
         return
     # Add an appropriate prefix to the string
@@ -815,12 +815,13 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
 
 def check_overrides():
     """ Allow some globals to be overridden from environment variables """
-    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, WARNINGS
+    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, SUPPRESS_WARNINGS
     DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
     DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
     SAVE_TO_CODELINARO = check_and_return(
         "OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
-    WARNINGS = check_and_return("OVERRIDE_WARNINGS", str(WARNINGS)) == "True"
+    SUPPRESS_WARNINGS = check_and_return(
+        "OVERRIDE_SUPPRESS_WARNINGS", str(SUPPRESS_WARNINGS)) == "True"
 
 
 def check_environment_variables():
