@@ -1,5 +1,11 @@
 """ Cost & Usage Analysis script """
 
+# pylint: disable=global-statement
+# pylint: disable=missing-function-docstring
+# pylint: disable=missing-class-docstring
+# pylint: disable=too-many-lines
+# pylint: disable=consider-using-dict-items
+
 # See README.md for an explanation of how this script works.
 
 import csv
@@ -116,10 +122,10 @@ def get_secret(secret_name: str):
         get_secret_value_response = client.get_secret_value(
             SecretId=secret_name
         )
-    except ClientError as e:
+    except ClientError as exc:
         # For a list of exceptions thrown, see
         # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-        raise e
+        raise exc
 
     # Decrypts secret using the associated KMS key.
     secret = json.loads(get_secret_value_response['SecretString'])
@@ -162,25 +168,30 @@ def sync_codelinaro_project_costs(date_range: str):
         compare_persistent_storage_costs(previous_data, year_month, auth_token, project)
 
 
-def compare_persistent_storage_costs(previous_data: list, year_month: str, auth_token: str, project: dict):
+def compare_persistent_storage_costs(
+        previous_data: list, year_month: str, auth_token: str, project: dict):
     # The big difference between peristent storage costs and cache costs is that a repo
     # can, over its lifetime, have multiple filing systems associated with it.
-    # "previous_cost" is therefore a dictionary of EFS IDs (key) and cost (value) so we have to iterate
-    # through that and save against the ID.
+    # "previous_cost" is therefore a dictionary of EFS IDs (key) and cost (value) so we
+    # have to iterate through that and save against the ID.
     if "persistent_storage_cost" in project:
         project_id = project["project_id"]
         storage_cost = project["persistent_storage_cost"]
         pricelist_cost = project["persistent_storage_pricelist_cost"]
         previous_cost = get_previous_persistent_storage_cost(previous_data, project_id)
-        previous_pricelist_cost = get_previous_persistent_storage_cost(previous_data, project_id, "persistent_storage_pricelist_cost")
+        previous_pricelist_cost = get_previous_persistent_storage_cost(
+            previous_data, project_id, "persistent_storage_pricelist_cost")
         for fs_id in storage_cost:
             prev_cost = previous_cost[fs_id] if fs_id in previous_cost else None
-            prev_pricelist_cost = previous_pricelist_cost[fs_id] if fs_id in previous_pricelist_cost else None
+            prev_pricelist_cost = previous_pricelist_cost[fs_id] \
+                if fs_id in previous_pricelist_cost else None
             save_codelinaro_persistent_storage_cost(
-                project_id, year_month, storage_cost[fs_id], pricelist_cost[fs_id], fs_id, prev_cost, prev_pricelist_cost, auth_token)
-        
+                project_id, year_month, storage_cost[fs_id], pricelist_cost[fs_id],
+                fs_id, prev_cost, prev_pricelist_cost, auth_token)
 
-def get_previous_persistent_storage_cost(data: list, project_id: str, key: str="persistent_storage_cost") -> dict:
+
+def get_previous_persistent_storage_cost(
+        data: list, project_id: str, key: str="persistent_storage_cost") -> dict:
     for project in data:
         if project["project_id"] == project_id:
             return project.get(key, {})
@@ -188,10 +199,16 @@ def get_previous_persistent_storage_cost(data: list, project_id: str, key: str="
 
 
 def save_codelinaro_persistent_storage_cost(
-        project_id: str, year_month: str, storage_cost: float, pricelist_cost: float, fs_id: str, previous_cost: Union[float, None], previous_pricelist_cost: Union[float, None], auth: str):
-    if previous_cost is not None and previous_pricelist_cost is not None and equal_to_x_dp(storage_cost, previous_cost) and equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
+        project_id: str, year_month: str, storage_cost: float, pricelist_cost: float,
+        fs_id: str, previous_cost: Union[float, None],
+        previous_pricelist_cost: Union[float, None], auth: str):
+    if previous_cost is not None and \
+            previous_pricelist_cost is not None and \
+            equal_to_x_dp(storage_cost, previous_cost) and \
+            equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
         output(
-            f"Skipping persistent storage cost for {project_id} because it hasn't changed from last time", LogLevel.INFO
+            f"Skipping persistent storage cost for {project_id} because it "
+            "hasn't changed from last time", LogLevel.INFO
         )
         return
 
@@ -201,7 +218,8 @@ def save_codelinaro_persistent_storage_cost(
         previously = f", previously {previous_cost:.10f}"
 
     output(
-        f"Saving cost ({storage_cost:.10f}{previously}) of {project_id}/storage to CodeLinaro API", LogLevel.INFO)
+        f"Saving cost ({storage_cost:.10f}{previously}) of "
+        f"{project_id}/storage to CodeLinaro API", LogLevel.INFO)
     body = {
         "repo_id": project_id,
         "filesystem_id": fs_id,
@@ -216,7 +234,8 @@ def save_codelinaro_persistent_storage_cost(
     response = requests.post(
         url,
         headers=header,
-        json=body
+        json=body,
+        timeout=60
     )
     if response.status_code > 299:
         output("Saving CI persistent storage cost failed. Payload was:", LogLevel.INFO)
@@ -240,7 +259,8 @@ def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, p
         cache_pricelist_cost = project["cache_pricelist_cost"]
         previous_cost, previous_pricelist_cost = get_previous_cache_cost(previous_data, project_id)
         save_codelinaro_project_cache_cost(
-            project_id, year_month, cache_cost, cache_pricelist_cost, previous_cost, previous_pricelist_cost, auth_token)
+            project_id, year_month, cache_cost, cache_pricelist_cost,
+            previous_cost, previous_pricelist_cost, auth_token)
 
 
 def compare_project_costs(previous_data: list, auth_token: str, project: dict):
@@ -268,7 +288,8 @@ def compare_project_costs(previous_data: list, auth_token: str, project: dict):
                 job_cost = job["cost"]
                 pricelist_cost = job["pricelist_cost"]
                 save_codelinaro_job_cost(
-                    project_id, pipeline_id, job_id, job_cost, pricelist_cost, previous_data, auth_token)
+                    project_id, pipeline_id, job_id, job_cost,
+                    pricelist_cost, previous_data, auth_token)
 
 
 def get_job_object(data: list, project_id: str, pipeline_id: str, job_id: str) -> dict:
@@ -308,7 +329,8 @@ def iterate_to_find(data: list, identifier: str, value: str) -> dict:
     return {}
 
 
-def get_previous_cache_cost(data: list, project_id: str) -> Tuple[Union[float, None], Union[float, None]]:
+def get_previous_cache_cost(
+        data: list, project_id: str) -> Tuple[Union[float, None], Union[float, None]]:
     """Find the previous cache cost, if there is one, for this project
 
     Args:
@@ -342,7 +364,8 @@ def get_token_from_auth0() -> str:
         }
         response = requests.post(
             AUTH0_CLIENT_URL,
-            json=body
+            json=body,
+            timeout=60
         )
         if response.status_code > 299:
             output("Getting Auth0 token failed. Payload was:", LogLevel.INFO)
@@ -352,7 +375,9 @@ def get_token_from_auth0() -> str:
     return AUTH0_TOKEN
 
 
-def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job_cost: float, pricelist_cost: float, previous_data: list, auth: str):
+def save_codelinaro_job_cost(
+        project_id: str, pipeline_id: str, job_id: str, job_cost: float,
+        pricelist_cost: float, previous_data: list, auth: str):
     """Call the CodeLinaro API to save the job cost
 
     Args:
@@ -371,13 +396,18 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     if project_id is None or pipeline_id is None or job_id is None:
         if DEBUG:
             output(
-                f"Skipping cost ({job_cost:.10f}) because one or more of {project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
+                f"Skipping cost ({job_cost:.10f}) because one or more of "
+                f"{project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
         return
 
-    if previous_pricelist_cost is not None and previous_cost is not None and equal_to_x_dp(job_cost, previous_cost) and equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
+    if previous_pricelist_cost is not None and \
+            previous_cost is not None and \
+            equal_to_x_dp(job_cost, previous_cost) and \
+            equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
         if DEBUG:
             output(
-                f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because it hasn't changed from last time", LogLevel.INFO)
+                f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because "
+                "it hasn't changed from last time", LogLevel.INFO)
         return
 
     if previous_cost is None:
@@ -387,8 +417,9 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
 
     if DEBUG:
         output(
-            f"Saving cost ({job_cost:.10f}{previously}) of {project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
-    
+            f"Saving cost ({job_cost:.10f}{previously}) of "
+            f"{project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
+
     body = {
         "repoID": project_id,
         "pipelineID": pipeline_id,
@@ -403,7 +434,8 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     response = requests.post(
         url,
         headers=header,
-        json=body
+        json=body,
+        timeout=60
     )
     if response.status_code > 299:
         output("Saving CI job cost failed. Payload was:", LogLevel.INFO)
@@ -411,7 +443,10 @@ def save_codelinaro_job_cost(project_id: str, pipeline_id: str, job_id: str, job
     response.raise_for_status()
 
 
-def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_cost: float, cache_pricelist_cost: float, previous_cost: Union[float, None], previous_pricelist_cost: Union[float, None], auth: str):
+def save_codelinaro_project_cache_cost(
+        project_id: str, year_month: str, cache_cost: float,
+        cache_pricelist_cost: float, previous_cost: Union[float, None],
+        previous_pricelist_cost: Union[float, None], auth: str):
     """Call the CodeLinaro API to save the cache cost
 
     Args:
@@ -421,9 +456,13 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
         previous_cost (Union[float, None]): previous cost or None if there wasn't one
         auth (str): API access token
     """
-    if previous_pricelist_cost is not None and previous_cost is not None and equal_to_x_dp(cache_cost, previous_cost) and equal_to_x_dp(cache_pricelist_cost, previous_pricelist_cost):
+    if previous_pricelist_cost is not None and \
+            previous_cost is not None and \
+            equal_to_x_dp(cache_cost, previous_cost) and \
+            equal_to_x_dp(cache_pricelist_cost, previous_pricelist_cost):
         output(
-            f"Skipping cache cost for {project_id} because it hasn't changed from last time", LogLevel.INFO
+            f"Skipping cache cost for {project_id} because it hasn't "
+            "changed from last time", LogLevel.INFO
         )
         return
 
@@ -433,7 +472,8 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
         previously = f", previously {previous_cost:.10f}"
 
     output(
-        f"Saving cost ({cache_cost:.10f}{previously}) of {project_id}/cache to CodeLinaro API", LogLevel.INFO)
+        f"Saving cost ({cache_cost:.10f}{previously}) of "
+        f"{project_id}/cache to CodeLinaro API", LogLevel.INFO)
     body = {
         "repoID": project_id,
         "date": year_month,
@@ -447,7 +487,8 @@ def save_codelinaro_project_cache_cost(project_id: str, year_month: str, cache_c
     response = requests.post(
         url,
         headers=header,
-        json=body
+        json=body,
+        timeout=60
     )
     if response.status_code > 299:
         output("Saving CI cache cost failed. Payload was:", LogLevel.INFO)
@@ -482,10 +523,11 @@ def get_project_details_from_efs_id(efs_id: str) -> Union[None, dict]:
             "Authorization": f"Bearer {auth_token}"
         }
         url = f"{CLO_API_URL}/projects/systems/persistent-storage/{efs_id}"
-        response = requests.get(url, headers=header)
+        response = requests.get(url, headers=header, timeout=60)
         if response.status_code > 299:
             output(
-                f"Got {response.status_code} when querying EFS ID {efs_id} ({response.text})", LogLevel.INFO
+                f"Got {response.status_code} when querying EFS "
+                f"ID {efs_id} ({response.text})", LogLevel.WARNING
             )
             return None
         data = response.json()
@@ -529,6 +571,7 @@ def process_efs(row: dict):
         project_in_list["persistent_storage_pricelist_cost"] = {}
     add_to_efs_cost(project_in_list, "persistent_storage_cost", fs_id, storage_cost)
     add_to_efs_cost(project_in_list, "persistent_storage_pricelist_cost", fs_id, pricelist_cost)
+    TOTAL_ALLOCATED += storage_cost # pylint: disable=undefined-variable
     output(
         f"Project {repo_id} EFS usage ({fs_id}) cost {storage_cost}", LogLevel.INFO
     )
@@ -562,7 +605,7 @@ def output(string: str, level: LogLevel):
     if level == LogLevel.DEBUG and not DEBUG:
         return
     if WARNINGS and level == LogLevel.WARNING:
-        SUPPRESSED_WARNING_COUNT += 1
+        SUPPRESSED_WARNING_COUNT += 1 # pylint: disable=undefined-variable
         return
     # Add an appropriate prefix to the string
     if level == LogLevel.ERROR:
@@ -618,7 +661,7 @@ def perform_billing_analysis():
         set_up_cloudwatch()
         # Process this month
         today = datetime.date.today()
-        process_billing_report(today.month, today.year)
+        # process_billing_report(today.month, today.year)
         # Process last month if there was anything
         last_month = today.month - 1
         if last_month < 1:
@@ -629,7 +672,7 @@ def perform_billing_analysis():
         process_billing_report(last_month, last_month_year)
         if not PROCESSING_ERROR:
             output("Processing has completed", LogLevel.INFO)
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-exception-caught
         output(
             "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
         output(str(exc), LogLevel.ERROR)
@@ -649,8 +692,8 @@ def create_cloudwatch_log_group():
         logGroupNamePrefix=ANALYSIS_LOG_GROUP
     )
     log_groups = response["logGroups"]
-    for lg in log_groups:
-        if "logGroupName" in lg and lg["logGroupName"] == ANALYSIS_LOG_GROUP:
+    for group in log_groups:
+        if "logGroupName" in group and group["logGroupName"] == ANALYSIS_LOG_GROUP:
             return
     response = client.create_log_group(
         logGroupName=ANALYSIS_LOG_GROUP
@@ -755,15 +798,15 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
         return None
     manifest = f"{parts[1]}-Manifest.json"
 
-    s3 = get_cur_s3_client()
+    s3_client = get_cur_s3_client()
     content = {}
     try:
-        json_object = s3.get_object(
+        json_object = s3_client.get_object(
             Bucket=CUR_BUCKET,  # type: ignore
             Key=f"{CUR_PREFIX}/{date_range}/{manifest}")
         json_file_reader = json_object['Body'].read()
         content = json.loads(json_file_reader)
-    except s3.exceptions.from_code("NoSuchKey"):  # type: ignore
+    except s3_client.exceptions.from_code("NoSuchKey"):  # type: ignore
         pass
     if "reportKeys" in content:
         return content["reportKeys"]
@@ -772,15 +815,18 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
 
 def check_overrides():
     """ Allow some globals to be overridden from environment variables """
-    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO
+    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, WARNINGS
     DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
     DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
-    SAVE_TO_CODELINARO = check_and_return("OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
+    SAVE_TO_CODELINARO = check_and_return(
+        "OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
+    WARNINGS = check_and_return("OVERRIDE_WARNINGS", str(WARNINGS)) == "True"
 
 
 def check_environment_variables():
     """ Get the variables for the CloudWatch log groups """
-    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL, PRICE_LIST
+    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET
+    global CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL, PRICE_LIST
     check_overrides()
     CUR_BUCKET = check_and_return("CUR_BUCKET_NAME")
     CUR_PREFIX = check_and_return("CUR_PREFIX")
@@ -796,8 +842,8 @@ def check_environment_variables():
     if PRICE_LIST is None:
         dir_path = os.path.dirname(os.path.abspath(__file__))
         if os.path.exists(f"{dir_path}/price_list.json"):
-            with open(f"{dir_path}/price_list.json", "rb") as f:
-                PRICE_LIST= json.load(f)
+            with open(f"{dir_path}/price_list.json", "rb") as file:
+                PRICE_LIST= json.load(file)
                 output("Price list loaded from file", LogLevel.INFO)
         else:
             print(f"No price list found in {dir_path}")
@@ -837,7 +883,8 @@ def process_s3_object(s3_key: list, date_range: str):
 
     if DEBUG:
         output(
-            f"Sanity check: rows counted = {CUR_FILE_ROW_COUNT}, size of list = {len(CUR_FILE)}", LogLevel.DEBUG)
+            f"Sanity check: rows counted = {CUR_FILE_ROW_COUNT}, "
+            f"size of list = {len(CUR_FILE)}", LogLevel.DEBUG)
         # Sanity check the totals so far ...
         total_test = sanity_check_totals(PENDING_FARGATE_COSTS,
                                          "PENDING_FARGATE_COSTS")
@@ -864,7 +911,8 @@ def process_s3_object(s3_key: list, date_range: str):
     last_output = ""
     usk_len = len(USAGE_START_KEYS)
     for start in USAGE_START_KEYS:
-        new_output = f"Reading CUR: {int(counter*100/usk_len)}%: {start}" if DEBUG else f"Reading CUR: {int(counter*100/len(USAGE_START_KEYS))}%"
+        new_output = f"Reading CUR: {int(counter*100/usk_len)}%: {start}" if DEBUG \
+            else f"Reading CUR: {int(counter*100/len(USAGE_START_KEYS))}%"
         if new_output != last_output:
             output(new_output, LogLevel.INFO)
             last_output = new_output
@@ -915,7 +963,9 @@ def check_for_unprocessed_ec2nw_costs():
         for line in PENDING_EC2NW_COSTS[date]:
             if line[LINE_ITEM_ID] != "" and missing_ec2_instance(line[RESOURCE_ID]):
                 output(
-                    f"Moving unprocessed EC2NW cost to unallocated because resource ID {line[RESOURCE_ID]} cannot be found in CUR file. This should be a temporary situation until the next file is processed.",
+                    "Moving unprocessed EC2NW cost to unallocated because resource "
+                    f"ID {line[RESOURCE_ID]} cannot be found in CUR file. This should "
+                    "be a temporary situation until the next file is processed.",
                     LogLevel.WARNING
                 )
                 add_to(UNALLOCATED_COSTS, line)
@@ -984,7 +1034,8 @@ PROCESSING_ERROR = False
 def initialise_billing_globals():
     """ (Re)initialise the globals used by the billing code """
     global PROJECT_COSTS, BASE_COSTS, UNALLOCATED_COSTS
-    global PENDING_FARGATE_COSTS, PENDING_NATGW_COSTS, PENDING_VOLUME_COSTS, PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS
+    global PENDING_FARGATE_COSTS, PENDING_NATGW_COSTS, PENDING_VOLUME_COSTS
+    global PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS
     global DEFAULT_NODE_INSTANCES, DEFAULT_NODE_GROUPS, USAGE_START_KEYS, EC2_INSTANCE_IDS
     global TOTAL_COST_FROM_CUR, TOTAL_ALLOCATED
     global CUR_FILE_ROW_COUNT, CUR_FILE_PROCESSED_COUNT, CUR_FILE
@@ -1067,13 +1118,13 @@ def load_from_s3(date_range: str, filename: str, if_not_found: Union[None, dict]
     if RESULTS_BUCKET is None:
         return content
 
-    s3 = boto3.client('s3')
+    s3_client = boto3.client('s3')
     try:
-        json_object = s3.get_object(
+        json_object = s3_client.get_object(
             Bucket=RESULTS_BUCKET, Key=f"{date_range}/{filename}")
         json_file_reader = json_object['Body'].read()
         content = json.loads(json_file_reader)
-    except s3.exceptions.from_code("NoSuchKey"):  # type: ignore
+    except s3_client.exceptions.from_code("NoSuchKey"):  # type: ignore
         pass
     return content
 
@@ -1104,6 +1155,9 @@ def totalise_project_costs() -> float:
             # project_id = project["project_id"]
             # output(f"{project_id} > cache cost: {cost:.10f}", LogLevel.INFO)
             month_project_total += cost
+        if "persistent_storage_cost" in project:
+            for fs_id in project["persistent_storage_cost"]:
+                month_project_total += project["persistent_storage_cost"][fs_id]
     output(f"Projects total cost: {month_project_total:.10f}", LogLevel.INFO)
     return month_project_total
 
@@ -1149,7 +1203,7 @@ def totalise_unallocated_costs() -> float:
     return month_unallocated_total
 
 
-def equal_to_x_dp(value1: float, value2: float, dp: int = 10) -> bool:
+def equal_to_x_dp(value1: float, value2: float, dec_points: int = 10) -> bool:
     """Compare two floats to the specified number of decimal places
 
     Args:
@@ -1160,8 +1214,8 @@ def equal_to_x_dp(value1: float, value2: float, dp: int = 10) -> bool:
     Returns:
         bool: true if they are equal to the number of decimal places, otherwise false
     """
-    str_value1 = "{value1:.{dp}f}".format(value1=value1, dp=dp)
-    str_value2 = "{value2:.{dp}f}".format(value2=value2, dp=dp)
+    str_value1 = "{value1:.{dp}f}".format(value1=value1, dp=dec_points) # pylint: disable=consider-using-f-string
+    str_value2 = "{value2:.{dp}f}".format(value2=value2, dp=dec_points) # pylint: disable=consider-using-f-string
     return str_value1 == str_value2
 
 
@@ -1179,9 +1233,11 @@ def totalise_costs(date_range: str, cur_file: list):
     costs_found += totalise_base_costs(True)
     costs_found += totalise_unallocated_costs()
 
-    if not equal_to_x_dp(costs_found, TOTAL_COST_FROM_CUR, dp=2):
+    if not equal_to_x_dp(costs_found, TOTAL_COST_FROM_CUR, dec_points=2):
         output(
-            f"Problem with cost allocation. Costs found={costs_found:.10f}, costs from CUR={TOTAL_COST_FROM_CUR:.10f}, difference = {TOTAL_COST_FROM_CUR - costs_found:.10f}",
+            f"Problem with cost allocation. Costs found={costs_found:.10f}, "
+            f"costs from CUR={TOTAL_COST_FROM_CUR:.10f}, "
+            f"difference = {TOTAL_COST_FROM_CUR - costs_found:.10f}",
             LogLevel.ERROR)
 
     if CUR_FILE_ROW_COUNT != CUR_FILE_PROCESSED_COUNT:
@@ -1192,7 +1248,8 @@ def totalise_costs(date_range: str, cur_file: list):
         for row in CUR_FILE:
             if row[LINE_ITEM_ID] != "":
                 output(
-                    f"{row[LINE_ITEM_ID]} - {row[PRODUCT_CODE]} - {row[RESOURCE_ID]} - {row[USAGE_START_DATE]} - {row[USAGE_TYPE]} - {row[UNBLENDED_COST]}",
+                    f"{row[LINE_ITEM_ID]} - {row[PRODUCT_CODE]} - {row[RESOURCE_ID]}"
+                    f" - {row[USAGE_START_DATE]} - {row[USAGE_TYPE]} - {row[UNBLENDED_COST]}",
                     LogLevel.DEBUG
                 )
 
@@ -1255,7 +1312,8 @@ def process_pending_natgw_costs(start_time: str) -> Tuple[float, Union[None, str
         start_time (str): the start time to look for
 
     Returns:
-        Tuple[float, Union[None, str]]: returns the cost plus the NAT gateway ID or None if not found
+        Tuple[float, Union[None, str]]: returns the cost plus the NAT gateway ID
+                                        or None if not found
     """
     nat_gateway = None
 
@@ -1310,8 +1368,11 @@ def extract_job_data(costs: dict, start_time: str) -> dict:
     return job_data
 
 
-def process_job_details(details: list, resource_id: str, proj: dict, job_data: dict, pod_start: datetime.datetime, pod_end: datetime.datetime):
-    """Given a list of jobs that ran on a node, add the details of the runners on that node to the job_data dict
+def process_job_details(
+        details: list, resource_id: str, proj: dict, job_data: dict,
+        pod_start: datetime.datetime, pod_end: datetime.datetime):
+    """Given a list of jobs that ran on a node, add the details of the runners
+       on that node to the job_data dict
 
     Args:
         details (list): list of jobs to process
@@ -1348,7 +1409,8 @@ def process_job_details(details: list, resource_id: str, proj: dict, job_data: d
                 detail["pod_end"] = pod_end
 
 
-def get_resource_details(resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
+def get_resource_details(
+        resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
     """Return project ID, job ID and pod name for the resource
 
     Args:
@@ -1396,7 +1458,8 @@ def find_dict_in_list(list_to_check: list, dict_key: str, dict_value: str) -> di
     return new_dict
 
 
-def add_cost_to_project(project_id: str, pipeline_id: str, job_id: str, cost: float, pricelist_cost: float):
+def add_cost_to_project(
+        project_id: str, pipeline_id: str, job_id: str, cost: float, pricelist_cost: float):
     """Add the cost to the specified project/build
 
     Args:
@@ -1443,7 +1506,9 @@ def add_cost_to_project(project_id: str, pipeline_id: str, job_id: str, cost: fl
     TOTAL_ALLOCATED += cost
 
 
-def job_times_for_slot(row: dict, job: dict) -> Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]:
+def job_times_for_slot(
+        row: dict, job: dict) -> Tuple[Union[None, datetime.datetime],
+        Union[None, datetime.datetime]]:
     """Get job start & end times, adjusted for the current hour being worked on
 
     Args:
@@ -1451,8 +1516,9 @@ def job_times_for_slot(row: dict, job: dict) -> Tuple[Union[None, datetime.datet
         job (dict): the job being processed
 
     Returns:
-        Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]: the start and end times, or None if
-        they are outside the start & end time for the CUR file row being processed.
+        Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]:
+            the start and end times, or None if they are outside the start &
+            end time for the CUR file row being processed.
     """
     row_start = dateutil_parser.isoparse(row[USAGE_START_DATE])
     row_end = dateutil_parser.isoparse(row["lineItem/UsageEndDate"])
@@ -1521,7 +1587,9 @@ def get_ec2_rate(row: dict) -> float:
         if arch in PRICE_LIST and vcpus in PRICE_LIST[arch]:
             return PRICE_LIST[arch][vcpus]
         else:
-            output(f"Failed to match arch {arch} and vCPUs {vcpus} in price list ({instance_type})", LogLevel.ERROR)
+            output(
+                f"Failed to match arch {arch} and vCPUs {vcpus} in price list ({instance_type})",
+                LogLevel.ERROR)
             return 0.0
     output(f"No vCPUs found for instance type {instance_type}", LogLevel.ERROR)
     return 0.0
@@ -1544,7 +1612,7 @@ def get_fargate_rate(row: dict) -> float:
     # rate and use that as the key into the price list.
     if "fargate" in PRICE_LIST and unblended_rate in PRICE_LIST["fargate"]:
         return PRICE_LIST["fargate"][unblended_rate]
-    
+
     # If we don't match, log it as an error but still return a number so
     # that processing continues.
     output(f"Failed to match fargate cost {unblended_rate} in price list", LogLevel.ERROR)
@@ -1562,7 +1630,7 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
     """
     if row[LINE_ITEM_ID] == "":
         return
-    
+
     if source == "instance":
         rate = get_ec2_rate(row)
     elif source == "volume":
@@ -1574,7 +1642,7 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
     else:
         print(source)
         print(json.dumps(row))
-        sys.exit(0)
+        sys.exit("Unexpected source requiring a rate")
 
     pricelist_cost = rate * float(row["lineItem/UsageAmount"])
     unblended_cost = float(row[UNBLENDED_COST])
@@ -1592,7 +1660,8 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
 
         if job_data != [] and overall_time != 0.0:
             output(
-                f"{len(job_data)} jobs to process for {source} with overall time {overall_time}", LogLevel.DEBUG)
+                f"{len(job_data)} jobs to process for {source} with overall time {overall_time}",
+                LogLevel.DEBUG)
             job_cost_sum = 0.0
             job_pricelist_sum = 0.0
             for job in job_data:
@@ -1602,7 +1671,11 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
                     job_cost = unblended_cost * time_spent / overall_time
                     job_pricelist_cost = pricelist_cost * time_spent / overall_time
                     add_cost_to_project(
-                        job["project_id"], job["pipeline_id"], job["job_id"], job_cost, job_pricelist_cost)
+                        job["project_id"],
+                        job["pipeline_id"],
+                        job["job_id"],
+                        job_cost,
+                        job_pricelist_cost)
                     job_cost_sum += job_cost
                     job_pricelist_sum += job_pricelist_cost
             # The * / calculations can, over enough calculations, cause a rounding difference.
@@ -1627,7 +1700,11 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
     else:
         # Only one job on this instance so they pay for everything
         add_cost_to_project(
-            job_data[0]["project_id"], job_data[0]["pipeline_id"], job_data[0]["job_id"], unblended_cost, pricelist_cost)
+            job_data[0]["project_id"],
+            job_data[0]["pipeline_id"],
+            job_data[0]["job_id"],
+            unblended_cost,
+            pricelist_cost)
     processed_this_row(row)
 
 
@@ -1669,7 +1746,8 @@ def check_volume_costs(resource_id: str, job_data: list):
                     add_project_build_cost(job_data, volume, "volume")
                 else:
                     output(
-                        f"Adding volume costs for {resource_id} to base (no runners)", LogLevel.DEBUG)
+                        f"Adding volume costs for {resource_id} to base (no runners)",
+                        LogLevel.DEBUG)
                     add_to(BASE_COSTS, volume)
 
 
@@ -1684,15 +1762,16 @@ def check_network_costs(resource_id: str, job_data: list):
     # apparently NOT running so we have to look beyond the precise timeslot where the
     # instance was charged.
     for key in PENDING_EC2NW_COSTS:
-        for nw in PENDING_EC2NW_COSTS[key]:
+        for network in PENDING_EC2NW_COSTS[key]:
             # Match on the resource ID and make sure it hasn't been processed already
-            if nw[RESOURCE_ID] == resource_id:
+            if network[RESOURCE_ID] == resource_id:
                 if len(job_data) != 0:
-                    add_project_build_cost(job_data, nw, "network")
+                    add_project_build_cost(job_data, network, "network")
                 else:
                     output(
-                        f"Adding network costs for {resource_id} to base (no runners)", LogLevel.DEBUG)
-                    add_to(BASE_COSTS, nw)
+                        f"Adding network costs for {resource_id} to base (no runners)",
+                        LogLevel.DEBUG)
+                    add_to(BASE_COSTS, network)
 
 
 def process_pending_ec2nw_costs(start_time: str):
@@ -1701,12 +1780,13 @@ def process_pending_ec2nw_costs(start_time: str):
     Args:
         start_time (str): the time block of costs to process
     """
-    for nw in PENDING_EC2NW_COSTS[start_time]:
-        if nw[RESOURCE_ID] in DEFAULT_NODE_INSTANCES:
-            add_to(BASE_COSTS, nw)
+    for network in PENDING_EC2NW_COSTS[start_time]:
+        if network[RESOURCE_ID] in DEFAULT_NODE_INSTANCES:
+            add_to(BASE_COSTS, network)
 
 
-def process_pending_fargate_costs(start_time: str, network_total_cost: float, nat_gateway: Union[str, None]) -> float:
+def process_pending_fargate_costs(
+        start_time: str, network_total_cost: float, nat_gateway: Union[str, None]) -> float:
     """Allocate network costs to projects based on their NAT gateway usage proportion
 
     Args:
@@ -2199,7 +2279,8 @@ def fetch_job_times_from_gitlab(project_id: str, job_id: str) -> Tuple[datetime.
         }
         response = requests.get(
             f"{GITLAB_URL}api/v4/projects/{project_id}/jobs/{job_id}",
-            headers=header
+            headers=header,
+            timeout=60
         )
         response.raise_for_status()
         data = response.json()
@@ -2213,7 +2294,7 @@ def fetch_job_times_from_gitlab(project_id: str, job_id: str) -> Tuple[datetime.
     return dateutil_parser.isoparse(started_at), dateutil_parser.isoparse(finished_at)
 
 
-def get_data_from_cache(type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, Type]]:
+def get_data_from_cache(data_type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, Type]]:
     """Retrieve data from the general purpose analysis cache
 
     Args:
@@ -2225,12 +2306,12 @@ def get_data_from_cache(type: str, identifier: str, start_time: Union[datetime.d
     Returns:
         Tuple[bool, Union[None, Type]]: did we find it and, if so, the data retrieved
     """
-    if type not in ANALYSIS_CACHE:
+    if data_type not in ANALYSIS_CACHE:
         return False, None
     # datetime isn't serializable by JSON so we store it as a string
     enc_start = None if start_time is None else start_time.isoformat()
     end_end = None if end_time is None else end_time.isoformat()
-    for values in ANALYSIS_CACHE[type]:
+    for values in ANALYSIS_CACHE[data_type]:
         if values["id"] == identifier and \
             values["start_time"] == enc_start and \
                 values["end_time"] == end_end:
@@ -2238,7 +2319,7 @@ def get_data_from_cache(type: str, identifier: str, start_time: Union[datetime.d
     return False, None
 
 
-def save_data_to_cache(type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], data: Union[None, str, dict, list]):
+def save_data_to_cache(data_type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], data: Union[None, str, dict, list]):
     """Save the data to the cache
 
     Args:
@@ -2248,15 +2329,15 @@ def save_data_to_cache(type: str, identifier: str, start_time: Union[datetime.da
         end_time (Union[datetime.datetime, None]): optional - store the end time as well
         data (Union[None, str, dict, list]): the data to be stored
     """
-    ANALYSIS_CACHE.setdefault(type, [])
+    ANALYSIS_CACHE.setdefault(data_type, [])
     # Check that the result isn't there already - it shouldn't be
-    found, _ = get_data_from_cache(type, identifier, start_time, end_time)
+    found, _ = get_data_from_cache(data_type, identifier, start_time, end_time)
     if found:
         return
     # datetime isn't serializable by JSON so we store it as a string
     enc_start = None if start_time is None else start_time.isoformat()
     end_end = None if end_time is None else end_time.isoformat()
-    ANALYSIS_CACHE[type].append(
+    ANALYSIS_CACHE[data_type].append(
         {
             "id": identifier,
             "start_time": enc_start,
@@ -2857,7 +2938,7 @@ def process_s3_storage_costs(row: dict):
             project_in_list["cache_cost"] = 0.0
         if "cache_pricelist_cost" not in project_in_list:
             project_in_list["cache_pricelist_cost"] = 0.0
-        cost = (cache_cost * perc / 100.0)
+        cost = cache_cost * perc / 100.0
         project_in_list["cache_cost"] += cost
         project_in_list["cache_pricelist_cost"] += (pricelist_cost * perc / 100.0)
         TOTAL_ALLOCATED += cost
