@@ -113,6 +113,15 @@ AUTH0_CLIENT_URL = ""
 CLO_API_URL = ""
 AUTH0_TOKEN = ""
 AUTH0_SIGNING_KEY = ""
+JWKS_CLIENT = None
+
+
+def init_jwks_client():
+    global JWKS_CLIENT
+    if JWKS_CLIENT is None:
+        url = AUTH0_CLIENT_URL.replace("/oauth/token", "/.well-known/jwks.json")
+        JWKS_CLIENT = PyJWKClient(url, cache_keys=True)
+    return JWKS_CLIENT
 
 
 def get_secret(secret_name: str):
@@ -360,8 +369,7 @@ def valid_jwt(token: str) -> bool:
         # We haven't fetched the token yet
         return False
     header_data = jwt.get_unverified_header(token)
-    url = AUTH0_CLIENT_URL.replace("/oauth/token", "/.well-known/jwks.json")
-    jwks_client = PyJWKClient(url)
+    jwks_client = init_jwks_client()
     signing_key = jwks_client.get_signing_key_from_jwt(token)
     try:
         jwt.decode(token,
