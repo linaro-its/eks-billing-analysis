@@ -53,7 +53,8 @@ SUPPRESS_WARNINGS = True
 
 CUR_BUCKET = None
 CUR_PREFIX = None
-ASSUME_ROLE = None
+ASSUME_PROCESSING_ROLE = None
+ASSUME_CUR_READING_ROLE = None
 RESULTS_BUCKET = None
 CACHE_BUCKET = None
 CW_VPC_FLOW_LOGS = None
@@ -124,6 +125,22 @@ def init_jwks_client():
     return JWKS_CLIENT
 
 
+def get_assumed_role_client(client_type: str):
+    """ Return the desired boto3 client, assuming the processing role if required """
+    if ASSUME_PROCESSING_ROLE is None:
+        return boto3.client(client_type)
+
+    assumed_role_object = assume_role(ASSUME_PROCESSING_ROLE, client_type)
+    credentials = assumed_role_object['Credentials']
+    return boto3.client(
+        client_type,
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken'],
+    )
+
+
+
 def get_secret(secret_name: str):
     """Retrieve secrets from AWS Secrets Manager
 
@@ -131,7 +148,7 @@ def get_secret(secret_name: str):
         e: any unhandled exception - not sure why as it doesn't catch any
     """
     global AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET_KEY, GITLAB_TOKEN, PRICE_LIST
-    client = boto3.client('secretsmanager')
+    client = get_assumed_role_client('secretsmanager')
 
     try:
         get_secret_value_response = client.get_secret_value(
@@ -161,7 +178,7 @@ def sync_codelinaro_project_costs(date_range: str):
 
     # If a file already exists on S3, read it into previous_data
     year_month = date_range[:6]
-    client = boto3.client("s3")
+    client = get_assumed_role_client("s3")
     try:
         response = client.get_object(
             Bucket=RESULTS_BUCKET,  # type: ignore
@@ -655,7 +672,7 @@ def output(string: str, level: LogLevel):
         print(string)
         return
 
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     while True:
         try:
             if LOG_STREAM_TOKEN is None:
@@ -727,7 +744,7 @@ def set_up_cloudwatch():
 
 def create_cloudwatch_log_group():
     """ If it doesn't already exist, create the log group """
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.describe_log_groups(
         logGroupNamePrefix=ANALYSIS_LOG_GROUP
     )
@@ -749,7 +766,7 @@ def create_cloudwatch_log_stream():
     LOG_STREAM_NAME = str(datetime.datetime.now())
     # Replace colons with dashes
     LOG_STREAM_NAME = LOG_STREAM_NAME.replace(":", "-")
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     client.create_log_stream(
         logGroupName=ANALYSIS_LOG_GROUP,
         logStreamName=LOG_STREAM_NAME
@@ -790,20 +807,29 @@ def process_billing_report(month: int, year: int):
     process_s3_object(found_latest, date_range)
 
 
-def get_cur_s3_client() -> S3Client:
-    if ASSUME_ROLE is None or ASSUME_ROLE == "":
-        return boto3.client('s3')
-
+def assume_role(role_arn: str, client: str):
+    """ Return assumed role object """
     # create an STS client object that represents a live connection to the
     # STS service
     sts_client = boto3.client('sts')
 
     # Call the assume_role method of the STSConnection object and pass the role
     # ARN and a role session name.
-    assumed_role_object = sts_client.assume_role(
-        RoleArn=ASSUME_ROLE,
-        RoleSessionName="AssumeRoleSession1"
+    return sts_client.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=f"AssumeRoleSession1_{client}"
     )
+
+
+def get_cur_s3_client() -> S3Client:
+    if ASSUME_CUR_READING_ROLE is not None:
+        return get_s3_role_client(ASSUME_CUR_READING_ROLE)
+
+    return get_assumed_role_client("s3")
+
+
+def get_s3_role_client(role: str) -> S3Client:
+    assumed_role_object = assume_role(role, "s3")
 
     # From the response that contains the assumed role, get the temporary
     # credentials that can be used to make subsequent API calls
@@ -877,12 +903,16 @@ def check_overrides():
 
 def check_environment_variables():
     """ Get the variables for the CloudWatch log groups """
-    global CUR_BUCKET, CUR_PREFIX, ASSUME_ROLE, RESULTS_BUCKET, CACHE_BUCKET
-    global CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS, GITLAB_URL, PRICE_LIST
+    global CUR_BUCKET, CUR_PREFIX, ASSUME_CUR_READING_ROLE, ASSUME_PROCESSING_ROLE
+    global RESULTS_BUCKET, CACHE_BUCKET, CW_VPC_FLOW_LOGS, CW_CLUSTER_LOGS
+    global GITLAB_URL, PRICE_LIST
     check_overrides()
     CUR_BUCKET = check_and_return("CUR_BUCKET_NAME")
     CUR_PREFIX = check_and_return("CUR_PREFIX")
-    ASSUME_ROLE = check_and_return("ASSUME_ROLE")
+    ASSUME_PROCESSING_ROLE = check_and_return("ASSUME_PROCESSING_ROLE", "None")
+    if ASSUME_PROCESSING_ROLE == "None":
+        ASSUME_PROCESSING_ROLE = None
+    ASSUME_CUR_READING_ROLE = check_and_return("ASSUME_CUR_READING_ROLE")
     RESULTS_BUCKET = check_and_return("RESULTS_BUCKET_NAME")
     CACHE_BUCKET = check_and_return("CACHE_BUCKET_NAME")
     CW_VPC_FLOW_LOGS = check_and_return("CW_VPC_FLOW_LOGS")
@@ -892,7 +922,8 @@ def check_environment_variables():
         GITLAB_URL += "/"
     print(f"CUR_BUCKET={CUR_BUCKET}")
     print(f"CUR_PREFIX={CUR_PREFIX}")
-    print(f"ASSUME_ROLE={ASSUME_ROLE}")
+    print(f"ASSUME_PROCESSING_ROLE={ASSUME_PROCESSING_ROLE}")
+    print(f"ASSUME_CUR_READING_ROLE={ASSUME_CUR_READING_ROLE}")
     print(f"RESULTS_BUCKET={RESULTS_BUCKET}")
     print(f"CACHE_BUCKET={CACHE_BUCKET}")
     print(f"CW_VPC_FLOW_LOGS={CW_VPC_FLOW_LOGS}")
@@ -1156,7 +1187,7 @@ def save_to_s3(date_range: str, data: Type, filename: str):
     temp.close()
     # Upload that file to S3
     if RESULTS_BUCKET is not None:
-        client = boto3.client("s3")
+        client = get_assumed_role_client("s3")
         client.upload_file(temp_filename, RESULTS_BUCKET,
                            f"{date_range}/{filename}")
     # Delete the temporary file
@@ -1178,7 +1209,7 @@ def load_from_s3(date_range: str, filename: str, if_not_found: Union[None, dict]
     if RESULTS_BUCKET is None:
         return content
 
-    s3_client = boto3.client('s3')
+    s3_client = get_assumed_role_client('s3')
     try:
         json_object = s3_client.get_object(
             Bucket=RESULTS_BUCKET, Key=f"{date_range}/{filename}")
@@ -1627,7 +1658,7 @@ def get_ec2_rate(row: dict) -> float:
     if PRICE_LIST is None:
         return float(row["lineItem/UnblendedRate"])
     # Call boto3 ec2 client to get instance information
-    ec2 = boto3.client('ec2')
+    ec2 = get_assumed_role_client('ec2')
     instance_type = row["product/instanceType"]
     response = ec2.describe_instance_types(InstanceTypes=[instance_type])
     # We're only asking for one instance type, so we'll only have one
@@ -1990,14 +2021,14 @@ def process_cur_report(s3_bucket: str, s3_key: str):
         s3_key (str): Key for S3 file to read
     """
     # If we are assuming a role to read the CUR file,
-    # we filter on the current account's ID.
-    match_account = check_and_return("OVERRIDE_AWS_ACCOUNT", "no-aws-account-override")
-    if match_account == "no-aws-account-override":
-        if ASSUME_ROLE is None or ASSUME_ROLE == "":
-            match_account = None
-        else:
-            match_account = boto3.client(
-                'sts').get_caller_identity().get('Account')
+    # we filter on the current account's ID or, if we are assuming
+    # a processing role, *that* account's ID.
+    if ASSUME_CUR_READING_ROLE is None or ASSUME_CUR_READING_ROLE == "":
+        match_account = None
+    else:
+        match_account = get_assumed_role_client(
+            'sts').get_caller_identity().get('Account')
+        print(f"Retrieving CUR records for account {match_account}")
 
     s3 = get_cur_s3_client()
     response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
@@ -2468,7 +2499,7 @@ def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None
         f"| filter objectRef.name like /runner/"
         f"| filter verb like \"create\""
     )
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.start_query(
         logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
@@ -2539,7 +2570,7 @@ def ec2_node_hostname(resource_id: str, start_time: datetime.datetime, end_time:
         "| sort @timestamp asc"
         "| limit 1"
     )
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.start_query(
         logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
@@ -2707,7 +2738,7 @@ def ci_ids_from_runner_logs(runner_name: str, start_time: Union[datetime.datetim
         "| filter verb like \"create\""
     )
 
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.start_query(
         logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
@@ -2787,7 +2818,7 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
     start_timestamp = start_time.timestamp() * 1000
     end_timestamp = end_time.timestamp() * 1000
 
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.describe_log_groups(
         logGroupNamePrefix=log_group
     )
@@ -2866,7 +2897,7 @@ def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], en
         return None
 
     ip_address = None
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.start_query(
         logGroupName=CW_CLUSTER_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
@@ -2931,7 +2962,7 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
         list[dict]: flow records that we've discovered
     """
     # Get the ENI for the NAT gateway
-    client = boto3.client("ec2")
+    client = get_assumed_role_client("ec2")
     response = client.describe_nat_gateways(
         NatGatewayIds=[nat_id]
     )
@@ -2944,7 +2975,7 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
         f" | filter srcAddr = \"{ip_address}\" or dstAddr = \"{ip_address}\""
         " | sort @timestamp desc"
     )
-    client = boto3.client('logs')
+    client = get_assumed_role_client('logs')
     response = client.start_query(
         logGroupName=CW_VPC_FLOW_LOGS,  # type: ignore
         startTime=int(start_time.timestamp()),
