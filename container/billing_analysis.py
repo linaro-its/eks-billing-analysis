@@ -3002,8 +3002,18 @@ def process_s3_storage_costs(row: dict):
     project_cache_usage = {}
     total_cache_usage = 0
     # Work out how much storage is being used per project
-    s3 = boto3.resource("s3")
-    bucket = s3.Bucket(CACHE_BUCKET)  # type: ignore
+    if ASSUME_PROCESSING_ROLE is None:
+        s3_resource = boto3.resource("s3")
+    else:
+        assumed_role_object = assume_role(ASSUME_PROCESSING_ROLE, "s3_resource")
+        credentials = assumed_role_object['Credentials']
+        s3_resource = boto3.resource(
+            "s3",
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken'],
+        )
+    bucket = s3_resource.Bucket(CACHE_BUCKET)  # type: ignore
     files = bucket.objects.all()
     for file in files:
         output(f"S3 cache: {file.key} = {file.size} bytes", LogLevel.INFO)
