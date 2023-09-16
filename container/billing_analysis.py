@@ -22,9 +22,11 @@ from io import TextIOWrapper
 from typing import Tuple, Type, Union
 
 import boto3
+import jwt
 import requests
 from botocore.exceptions import ClientError
 from dateutil import parser as dateutil_parser
+from jwt import PyJWKClient
 from mypy_boto3_s3.client import S3Client
 
 # Switch to True to enable sanity checking of costs (e.g. if the script starts
@@ -43,6 +45,9 @@ DEBUG_EC2NW_COSTS = False
 
 # Set to True if using the CodeLinaro APIs to save the costs.
 SAVE_TO_CODELINARO = True
+
+PROCESS_THIS_MONTH = True
+PROCESS_LAST_MONTH = True
 
 SUPPRESS_WARNINGS = True
 
@@ -107,6 +112,7 @@ AUTH0_CLIENT_AUDIENCE = ""
 AUTH0_CLIENT_URL = ""
 CLO_API_URL = ""
 AUTH0_TOKEN = ""
+AUTH0_SIGNING_KEY = ""
 
 
 def get_secret(secret_name: str):
@@ -348,6 +354,26 @@ def get_previous_cache_cost(
     return None, None
 
 
+def valid_jwt(token: str) -> bool:
+    """ Validate the passed token """
+    if token == "":
+        # We haven't fetched the token yet
+        return False
+    header_data = jwt.get_unverified_header(token)
+    url = AUTH0_CLIENT_URL.replace("/oauth/token", "/.well-known/jwks.json")
+    jwks_client = PyJWKClient(url)
+    signing_key = jwks_client.get_signing_key_from_jwt(token)
+    try:
+        jwt.decode(token,
+            key=signing_key.key,
+            algorithms=[header_data['alg'], ],
+            audience=AUTH0_CLIENT_AUDIENCE,
+            leeway=1)
+    except jwt.ExpiredSignatureError:
+        return False
+    return True
+
+
 def get_token_from_auth0() -> str:
     """Get an authorisation token
 
@@ -355,6 +381,10 @@ def get_token_from_auth0() -> str:
         str: access token for CodeLinaro
     """
     global AUTH0_TOKEN
+    # If we've got a cached token, make sure it is still valid. If not, clear
+    # it so that we fetch a new one.
+    if not valid_jwt(AUTH0_TOKEN):
+        AUTH0_TOKEN = ""
     if AUTH0_TOKEN == "":
         body = {
             "client_id": AUTH0_CLIENT_ID,
@@ -372,6 +402,7 @@ def get_token_from_auth0() -> str:
             output(json.dumps(body), LogLevel.INFO)
         response.raise_for_status()
         AUTH0_TOKEN = response.json()["access_token"]
+        print(AUTH0_TOKEN)
     return AUTH0_TOKEN
 
 
@@ -661,15 +692,17 @@ def perform_billing_analysis():
         set_up_cloudwatch()
         # Process this month
         today = datetime.date.today()
-        # process_billing_report(today.month, today.year)
+        if PROCESS_THIS_MONTH:
+            process_billing_report(today.month, today.year)
         # Process last month if there was anything
-        last_month = today.month - 1
-        if last_month < 1:
-            last_month = last_month + 12
-            last_month_year = today.year - 1
-        else:
-            last_month_year = today.year
-        process_billing_report(last_month, last_month_year)
+        if PROCESS_LAST_MONTH:
+            last_month = today.month - 1
+            if last_month < 1:
+                last_month = last_month + 12
+                last_month_year = today.year - 1
+            else:
+                last_month_year = today.year
+            process_billing_report(last_month, last_month_year)
         if not PROCESSING_ERROR:
             output("Processing has completed", LogLevel.INFO)
     except Exception as exc: # pylint: disable=broad-exception-caught
@@ -815,13 +848,18 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
 
 def check_overrides():
     """ Allow some globals to be overridden from environment variables """
-    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, SUPPRESS_WARNINGS
+    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, SUPPRESS_WARNINGS, \
+        PROCESS_LAST_MONTH, PROCESS_THIS_MONTH
     DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
     DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
     SAVE_TO_CODELINARO = check_and_return(
         "OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
     SUPPRESS_WARNINGS = check_and_return(
         "OVERRIDE_SUPPRESS_WARNINGS", str(SUPPRESS_WARNINGS)) == "True"
+    PROCESS_LAST_MONTH = check_and_return(
+        "OVERRIDE_PROCESS_LAST_MONTH", str(PROCESS_LAST_MONTH)) == "True"
+    PROCESS_THIS_MONTH = check_and_return(
+        "OVERRIDE_PROCESS_THIS_MONTH", str(PROCESS_LAST_MONTH)) == "True"
 
 
 def check_environment_variables():
@@ -1265,13 +1303,13 @@ def totalise_costs(date_range: str, cur_file: list):
             f"{SUPPRESSED_WARNING_COUNT} warnings have been suppressed", LogLevel.INFO)
 
     if not PROCESSING_ERROR:
-        if SAVE_TO_CODELINARO:
-            sync_codelinaro_project_costs(date_range)
         save_to_s3(date_range, PROJECT_COSTS, "project_costs.json")
         save_to_s3(date_range, BASE_COSTS, "base_costs.json")
         save_to_s3(date_range, UNALLOCATED_COSTS, "unallocated_costs.json")
         save_to_s3(date_range, cur_file, "cur_used.txt")
         save_to_s3(date_range, ANALYSIS_CACHE, "analysis_cache.json")
+        if SAVE_TO_CODELINARO:
+            sync_codelinaro_project_costs(date_range)
     else:
         output("Cost files have not been saved due to a processing error", LogLevel.INFO)
 
