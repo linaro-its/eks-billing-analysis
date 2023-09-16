@@ -1991,11 +1991,13 @@ def process_cur_report(s3_bucket: str, s3_key: str):
     """
     # If we are assuming a role to read the CUR file,
     # we filter on the current account's ID.
-    if ASSUME_ROLE is None or ASSUME_ROLE == "":
-        match_account = None
-    else:
-        match_account = boto3.client(
-            'sts').get_caller_identity().get('Account')
+    match_account = check_and_return("OVERRIDE_AWS_ACCOUNT", "no-aws-account-override")
+    if match_account == "no-aws-account-override":
+        if ASSUME_ROLE is None or ASSUME_ROLE == "":
+            match_account = None
+        else:
+            match_account = boto3.client(
+                'sts').get_caller_identity().get('Account')
 
     s3 = get_cur_s3_client()
     response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
