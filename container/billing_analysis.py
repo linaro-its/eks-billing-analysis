@@ -402,7 +402,6 @@ def get_token_from_auth0() -> str:
             output(json.dumps(body), LogLevel.INFO)
         response.raise_for_status()
         AUTH0_TOKEN = response.json()["access_token"]
-        print(AUTH0_TOKEN)
     return AUTH0_TOKEN
 
 
