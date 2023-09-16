@@ -867,6 +867,12 @@ def check_overrides():
         "OVERRIDE_PROCESS_LAST_MONTH", str(PROCESS_LAST_MONTH)) == "True"
     PROCESS_THIS_MONTH = check_and_return(
         "OVERRIDE_PROCESS_THIS_MONTH", str(PROCESS_LAST_MONTH)) == "True"
+    print(f"DEBUG={DEBUG}")
+    print(f"DEBUG_PROGRESS={DEBUG_PROGRESS}")
+    print(f"SAVE_TO_CODELINARO={SAVE_TO_CODELINARO}")
+    print(f"SUPPRESS_WARNINGS={SUPPRESS_WARNINGS}")
+    print(f"PROCESS_LAST_MONTH={PROCESS_LAST_MONTH}")
+    print(f"PROCESS_THIS_MONTH={PROCESS_THIS_MONTH}")
 
 
 def check_environment_variables():
@@ -884,6 +890,14 @@ def check_environment_variables():
     GITLAB_URL = check_and_return("GITLAB_URL")
     if GITLAB_URL[-1] != "/":
         GITLAB_URL += "/"
+    print(f"CUR_BUCKET={CUR_BUCKET}")
+    print(f"CUR_PREFIX={CUR_PREFIX}")
+    print(f"ASSUME_ROLE={ASSUME_ROLE}")
+    print(f"RESULTS_BUCKET={RESULTS_BUCKET}")
+    print(f"CACHE_BUCKET={CACHE_BUCKET}")
+    print(f"CW_VPC_FLOW_LOGS={CW_VPC_FLOW_LOGS}")
+    print(f"CW_CLUSTER_LOGS={CW_CLUSTER_LOGS}")
+    print(f"GITLAB_URL={GITLAB_URL}")
     initialise_codelinaro_globals()
     if PRICE_LIST is None:
         dir_path = os.path.dirname(os.path.abspath(__file__))
