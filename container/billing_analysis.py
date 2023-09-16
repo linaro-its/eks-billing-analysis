@@ -964,11 +964,21 @@ def process_s3_object(s3_key: list, date_range: str):
     """
     initialise_billing_globals()
     print(f"{len(s3_key)} CUR file(s) to process ...")
+    # If we are assuming a role to read the CUR file,
+    # we filter on the current account's ID or, if we are assuming
+    # a processing role, *that* account's ID.
+    if ASSUME_CUR_READING_ROLE is None or ASSUME_CUR_READING_ROLE == "":
+        match_account = None
+    else:
+        match_account = get_assumed_role_client(
+            'sts').get_caller_identity().get('Account')
+        print(f"Retrieving CUR records for account {match_account}")
+
     for key in s3_key:
         output(f"Processing CUR file {key}", LogLevel.INFO)
         # Read in the CUR file and either add each cost to BASE, UNALLOCATED or
         # mark it as pending.
-        process_cur_report(CUR_BUCKET, key)  # type: ignore
+        process_cur_report(CUR_BUCKET, key, match_account)  # type: ignore
 
     check_pending_volumes()
 
@@ -2013,23 +2023,13 @@ def add_up_traffic(records: list) -> int:
     return project_bytes
 
 
-def process_cur_report(s3_bucket: str, s3_key: str):
+def process_cur_report(s3_bucket: str, s3_key: str, match_account: Union[str, None]):
     """Process the records in the specified file
 
     Args:
         s3_bucket (str): S3 bucket to retrieve file from
         s3_key (str): Key for S3 file to read
     """
-    # If we are assuming a role to read the CUR file,
-    # we filter on the current account's ID or, if we are assuming
-    # a processing role, *that* account's ID.
-    if ASSUME_CUR_READING_ROLE is None or ASSUME_CUR_READING_ROLE == "":
-        match_account = None
-    else:
-        match_account = get_assumed_role_client(
-            'sts').get_caller_identity().get('Account')
-        print(f"Retrieving CUR records for account {match_account}")
-
     s3 = get_cur_s3_client()
     response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
     gzipped = GzipFile(None, 'rb', fileobj=response['Body'])
