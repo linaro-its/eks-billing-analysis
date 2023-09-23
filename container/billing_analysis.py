@@ -2819,9 +2819,19 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
     end_timestamp = end_time.timestamp() * 1000
 
     client = get_assumed_role_client('logs')
-    response = client.describe_log_groups(
-        logGroupNamePrefix=log_group
-    )
+    while True:
+        # Loop until we successfully get the log groups data
+        try:
+            response = client.describe_log_groups(
+                logGroupNamePrefix=log_group
+            )
+            break
+        except ClientError as exc:
+            if exc.response['Error']['Code'] == "ThrottlingException":
+                # sleep for one second and loop
+                time.sleep(1)
+            else:
+                raise
 
     for group in response["logGroups"]:
         if "logGroupName" in group and group["logGroupName"] == log_group:
