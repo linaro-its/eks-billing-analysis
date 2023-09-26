@@ -20,6 +20,7 @@ from enum import Enum
 from gzip import GzipFile
 from io import TextIOWrapper
 from typing import Tuple, Type, Union
+import uuid
 
 import boto3
 import jwt
@@ -1485,8 +1486,9 @@ def process_job_details(
     """
     for detail in details:
         if detail["job_id"] is None:
-            output(
-                f"Node {resource_id} cost {proj[UNBLENDED_COST]} but no runners", LogLevel.DEBUG)
+            if proj[UNBLENDED_COST] != "0.0000000000":
+                output(
+                    f"Node {resource_id} cost {proj[UNBLENDED_COST]} but no runners", LogLevel.DEBUG)
             return
 
         # See if this has already been added to the job data
@@ -2030,13 +2032,24 @@ def process_cur_report(s3_bucket: str, s3_key: str, match_account: Union[str, No
         s3_bucket (str): S3 bucket to retrieve file from
         s3_key (str): Key for S3 file to read
     """
-    s3 = get_cur_s3_client()
-    response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
-    gzipped = GzipFile(None, 'rb', fileobj=response['Body'])
+    temp_filename = f"/tmp/{uuid.uuid4()}"
+    s3_client = get_cur_s3_client()
+    output(f"Downloading {s3_key}", LogLevel.DEBUG)
+    with open(temp_filename, 'wb') as data:
+        s3_client.download_fileobj(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            Fileobj=data
+        )
+
+    gzipped = GzipFile(temp_filename, 'rb')
     data = TextIOWrapper(gzipped)  # type: ignore
     reader = csv.DictReader(data)
+    output(f"Processing {s3_key}", LogLevel.DEBUG)
     for row in reader:
         process_cur_row(row, match_account)
+
+    os.remove(temp_filename)
 
 
 def process_cur_row(row: dict, match_account: Union[str, None]):
@@ -2806,15 +2819,17 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
         end_time (datetime.datetime): when we want to end the query
 
     Returns:
-        Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]: start & end times, None if not valid, revised if needed
+        Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]: start & end times,
+            None if not valid, revised if needed
     """
     # If start_time and end_time are before the creation of the group, return None.
     # If start_time and end_time are more than X days previous, where X is the group's
     #   retention period, return None.
     # If start_time < creation of the group, adjust start_time to be the creation of the group.
     #
-    # Note that all of the CloudWatch queries require the timestamps to be seconds since the Epoch but
-    # describe_log_groups has values in milliseconds so we start by multiplying the start and end times.
+    # Note that all of the CloudWatch queries require the timestamps to be seconds since the Epoch
+    # but describe_log_groups has values in milliseconds so we start by multiplying the start and
+    # end times.
     start_timestamp = start_time.timestamp() * 1000
     end_timestamp = end_time.timestamp() * 1000
 
@@ -2842,7 +2857,8 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
                 return None, None
             # Calculate the earliest possible log date/time given the retention period.
             if "retentionInDays" not in group:
-                return None, None
+                # No retention? Assume dates are valid ...
+                return start_time, end_time
             retention = datetime.datetime.now() \
                 - datetime.timedelta(days=group["retentionInDays"])
             retention = int(retention.timestamp()) * 1000
