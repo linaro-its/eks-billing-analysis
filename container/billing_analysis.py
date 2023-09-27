@@ -893,7 +893,7 @@ def check_overrides():
     PROCESS_LAST_MONTH = check_and_return(
         "OVERRIDE_PROCESS_LAST_MONTH", str(PROCESS_LAST_MONTH)) == "True"
     PROCESS_THIS_MONTH = check_and_return(
-        "OVERRIDE_PROCESS_THIS_MONTH", str(PROCESS_LAST_MONTH)) == "True"
+        "OVERRIDE_PROCESS_THIS_MONTH", str(PROCESS_THIS_MONTH)) == "True"
     print(f"DEBUG={DEBUG}")
     print(f"DEBUG_PROGRESS={DEBUG_PROGRESS}")
     print(f"SAVE_TO_CODELINARO={SAVE_TO_CODELINARO}")
@@ -1453,10 +1453,11 @@ def extract_job_data(costs: dict, start_time: str) -> dict:
     for proj in costs[start_time]:
         pod_start = dateutil_parser.isoparse(proj[USAGE_START_DATE])
         pod_end = dateutil_parser.isoparse(proj["lineItem/UsageEndDate"])
-        # In testing, the CUR file could report a usage start and end date that
-        # was an hour out, so we go for an hour earlier start and an hour later
-        # end to make sure log searches work.
-        pod_start = pod_start + datetime.timedelta(hours=-1)
+        # For various reasons, there is a discrepancy between when things get
+        # logged in CUR and when things get logged in CloudWatch.
+        #
+        # We *try* to work around that by slightly widening the search window.
+        pod_start = pod_start + datetime.timedelta(hours=-2)
         pod_end = pod_end + datetime.timedelta(hours=1)
 
         resource_id = proj[RESOURCE_ID]
