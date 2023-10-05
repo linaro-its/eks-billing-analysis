@@ -46,9 +46,14 @@ DEBUG_EC2NW_COSTS = False
 
 # Set to True if using the CodeLinaro APIs to save the costs.
 SAVE_TO_CODELINARO = True
+# By default, we don't re-upload costs to CodeLinaro. Override
+# this to force costs to be resubmitted to the APIs.
+SAVE_ALREADY_SAVED = False
 
 PROCESS_THIS_MONTH = True
 PROCESS_LAST_MONTH = True
+PROCESS_SPECIFIED_MONTH = None
+PROCESS_SPECIFIED_YEAR = None
 
 SUPPRESS_WARNINGS = True
 
@@ -235,7 +240,7 @@ def save_codelinaro_persistent_storage_cost(
         project_id: str, year_month: str, storage_cost: float, pricelist_cost: float,
         fs_id: str, previous_cost: Union[float, None],
         previous_pricelist_cost: Union[float, None], auth: str):
-    if previous_cost is not None and \
+    if not SAVE_ALREADY_SAVED and previous_cost is not None and \
             previous_pricelist_cost is not None and \
             equal_to_x_dp(storage_cost, previous_cost) and \
             equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
@@ -456,7 +461,7 @@ def save_codelinaro_job_cost(
                 f"{project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
         return
 
-    if previous_pricelist_cost is not None and \
+    if not SAVE_ALREADY_SAVED and previous_pricelist_cost is not None and \
             previous_cost is not None and \
             equal_to_x_dp(job_cost, previous_cost) and \
             equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
@@ -512,7 +517,7 @@ def save_codelinaro_project_cache_cost(
         previous_cost (Union[float, None]): previous cost or None if there wasn't one
         auth (str): API access token
     """
-    if previous_pricelist_cost is not None and \
+    if not SAVE_ALREADY_SAVED and previous_pricelist_cost is not None and \
             previous_cost is not None and \
             equal_to_x_dp(cache_cost, previous_cost) and \
             equal_to_x_dp(cache_pricelist_cost, previous_pricelist_cost):
@@ -715,6 +720,11 @@ def perform_billing_analysis():
     try:
         check_environment_variables()
         set_up_cloudwatch()
+        # Has a specific month & year been specified?
+        if PROCESS_SPECIFIED_MONTH is not None and PROCESS_SPECIFIED_YEAR is not None:
+            process_billing_report(
+                int(PROCESS_SPECIFIED_MONTH),
+                int(PROCESS_SPECIFIED_YEAR))
         # Process this month
         today = datetime.date.today()
         if PROCESS_THIS_MONTH:
@@ -882,24 +892,34 @@ def get_cur_from_manifest(date_range: str) -> Union[list, None]:
 
 def check_overrides():
     """ Allow some globals to be overridden from environment variables """
-    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, SUPPRESS_WARNINGS, \
-        PROCESS_LAST_MONTH, PROCESS_THIS_MONTH
+    global DEBUG, DEBUG_PROGRESS, SAVE_TO_CODELINARO, SAVE_ALREADY_SAVED, \
+        SUPPRESS_WARNINGS, PROCESS_LAST_MONTH, PROCESS_THIS_MONTH, \
+        PROCESS_SPECIFIED_MONTH, PROCESS_SPECIFIED_YEAR
     DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
     DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
     SAVE_TO_CODELINARO = check_and_return(
         "OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
+    SAVE_ALREADY_SAVED = check_and_return(
+        "OVERRIDE_SAVE_ALREADY_SAVED", str(SAVE_ALREADY_SAVED)) == "True"
     SUPPRESS_WARNINGS = check_and_return(
         "OVERRIDE_SUPPRESS_WARNINGS", str(SUPPRESS_WARNINGS)) == "True"
     PROCESS_LAST_MONTH = check_and_return(
         "OVERRIDE_PROCESS_LAST_MONTH", str(PROCESS_LAST_MONTH)) == "True"
     PROCESS_THIS_MONTH = check_and_return(
         "OVERRIDE_PROCESS_THIS_MONTH", str(PROCESS_THIS_MONTH)) == "True"
+    PROCESS_SPECIFIED_MONTH = check_and_return(
+        "OVERRIDE_PROCESS_SPECIFIED_MONTH", PROCESS_SPECIFIED_MONTH)
+    PROCESS_SPECIFIED_YEAR = check_and_return(
+        "OVERRIDE_PROCESS_SPECIFIED_YEAR", PROCESS_SPECIFIED_YEAR)
     print(f"DEBUG={DEBUG}")
     print(f"DEBUG_PROGRESS={DEBUG_PROGRESS}")
     print(f"SAVE_TO_CODELINARO={SAVE_TO_CODELINARO}")
+    print(f"SAVE_ALREADY_SAVED={SAVE_ALREADY_SAVED}")
     print(f"SUPPRESS_WARNINGS={SUPPRESS_WARNINGS}")
     print(f"PROCESS_LAST_MONTH={PROCESS_LAST_MONTH}")
     print(f"PROCESS_THIS_MONTH={PROCESS_THIS_MONTH}")
+    print(f"PROCESS_SPECIFIED_MONTH={PROCESS_SPECIFIED_MONTH}")
+    print(f"PROCESS_SPECIFIED_YEAR={PROCESS_SPECIFIED_YEAR}")
 
 
 def check_environment_variables():
@@ -2423,6 +2443,7 @@ def get_data_from_cache(data_type: str, identifier: str, start_time: Union[datet
             values["start_time"] == enc_start and \
                 values["end_time"] == end_end:
             return True, values["data"]
+    print(f"Cache miss looking for {data_type} with id {identifier}, start time {start_time} and end time {end_time}")
     return False, None
 
 
