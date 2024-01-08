@@ -52,8 +52,8 @@ SAVE_ALREADY_SAVED = False
 
 PROCESS_THIS_MONTH = True
 PROCESS_LAST_MONTH = True
-PROCESS_SPECIFIED_MONTH = None
-PROCESS_SPECIFIED_YEAR = None
+PROCESS_SPECIFIED_MONTH = ""
+PROCESS_SPECIFIED_YEAR = ""
 
 SUPPRESS_WARNINGS = True
 
@@ -126,7 +126,8 @@ JWKS_CLIENT = None
 def init_jwks_client():
     global JWKS_CLIENT
     if JWKS_CLIENT is None:
-        url = AUTH0_CLIENT_URL.replace("/oauth/token", "/.well-known/jwks.json")
+        url = AUTH0_CLIENT_URL.replace(
+            "/oauth/token", "/.well-known/jwks.json")
         JWKS_CLIENT = PyJWKClient(url, cache_keys=True)
     return JWKS_CLIENT
 
@@ -144,7 +145,6 @@ def get_assumed_role_client(client_type: str):
         aws_secret_access_key=credentials['SecretAccessKey'],
         aws_session_token=credentials['SessionToken'],
     )
-
 
 
 def get_secret(secret_name: str):
@@ -203,7 +203,8 @@ def sync_codelinaro_project_costs(date_range: str):
     for project in PROJECT_COSTS:
         compare_project_costs(previous_data, auth_token, project)
         compare_cache_costs(previous_data, year_month, auth_token, project)
-        compare_persistent_storage_costs(previous_data, year_month, auth_token, project)
+        compare_persistent_storage_costs(
+            previous_data, year_month, auth_token, project)
 
 
 def compare_persistent_storage_costs(
@@ -216,7 +217,8 @@ def compare_persistent_storage_costs(
         project_id = project["project_id"]
         storage_cost = project["persistent_storage_cost"]
         pricelist_cost = project["persistent_storage_pricelist_cost"]
-        previous_cost = get_previous_persistent_storage_cost(previous_data, project_id)
+        previous_cost = get_previous_persistent_storage_cost(
+            previous_data, project_id)
         previous_pricelist_cost = get_previous_persistent_storage_cost(
             previous_data, project_id, "persistent_storage_pricelist_cost")
         for fs_id in storage_cost:
@@ -229,7 +231,7 @@ def compare_persistent_storage_costs(
 
 
 def get_previous_persistent_storage_cost(
-        data: list, project_id: str, key: str="persistent_storage_cost") -> dict:
+        data: list, project_id: str, key: str = "persistent_storage_cost") -> dict:
     for project in data:
         if project["project_id"] == project_id:
             return project.get(key, {})
@@ -269,17 +271,11 @@ def save_codelinaro_persistent_storage_cost(
     header = {
         "Authorization": f"Bearer {auth}"
     }
-    response = requests.post(
-        url,
-        headers=header,
-        json=body,
-        timeout=60
-    )
+    response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI persistent storage cost failed. Payload was:", LogLevel.INFO)
         output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
-
 
 
 def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, project: dict):
@@ -295,7 +291,8 @@ def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, p
         project_id = project["project_id"]
         cache_cost = project["cache_cost"]
         cache_pricelist_cost = project["cache_pricelist_cost"]
-        previous_cost, previous_pricelist_cost = get_previous_cache_cost(previous_data, project_id)
+        previous_cost, previous_pricelist_cost = get_previous_cache_cost(
+            previous_data, project_id)
         save_codelinaro_project_cache_cost(
             project_id, year_month, cache_cost, cache_pricelist_cost,
             previous_cost, previous_pricelist_cost, auth_token)
@@ -396,10 +393,10 @@ def valid_jwt(token: str) -> bool:
     signing_key = jwks_client.get_signing_key_from_jwt(token)
     try:
         jwt.decode(token,
-            key=signing_key.key,
-            algorithms=[header_data['alg'], ],
-            audience=AUTH0_CLIENT_AUDIENCE,
-            leeway=1)
+                   key=signing_key.key,
+                   algorithms=[header_data['alg'], ],
+                   audience=AUTH0_CLIENT_AUDIENCE,
+                   leeway=1)
     except jwt.ExpiredSignatureError:
         return False
     return True
@@ -423,11 +420,7 @@ def get_token_from_auth0() -> str:
             "audience": AUTH0_CLIENT_AUDIENCE,
             "grant_type": "client_credentials"
         }
-        response = requests.post(
-            AUTH0_CLIENT_URL,
-            json=body,
-            timeout=60
-        )
+        response = safe_requests_post(AUTH0_CLIENT_URL, body=body)
         if response.status_code > 299:
             output("Getting Auth0 token failed. Payload was:", LogLevel.INFO)
             output(json.dumps(body), LogLevel.INFO)
@@ -492,15 +485,15 @@ def save_codelinaro_job_cost(
         "Authorization": f"Bearer {auth}"
     }
     url = f"{CLO_API_URL}/ci/job"
-    response = requests.post(
-        url,
-        headers=header,
-        json=body,
-        timeout=60
-    )
+    response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI job cost failed. Payload was:", LogLevel.INFO)
         output(json.dumps(body), LogLevel.INFO)
+    else:
+        output(
+            f"Saved cost ({job_cost:.10f}{previously}) of "
+            f"{project_id}/{pipeline_id}/{job_id} to CodeLinaro "
+            f"API ({response.status_code})", LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -545,12 +538,7 @@ def save_codelinaro_project_cache_cost(
     header = {
         "Authorization": f"Bearer {auth}"
     }
-    response = requests.post(
-        url,
-        headers=header,
-        json=body,
-        timeout=60
-    )
+    response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI cache cost failed. Payload was:", LogLevel.INFO)
         output(json.dumps(body), LogLevel.INFO)
@@ -584,7 +572,7 @@ def get_project_details_from_efs_id(efs_id: str) -> Union[None, dict]:
             "Authorization": f"Bearer {auth_token}"
         }
         url = f"{CLO_API_URL}/projects/systems/persistent-storage/{efs_id}"
-        response = requests.get(url, headers=header, timeout=60)
+        response = safe_requests_get(url, header)
         if response.status_code > 299:
             output(
                 f"Got {response.status_code} when querying EFS "
@@ -605,6 +593,7 @@ def process_efs(row: dict):
     # EFS is set up on CodeLinaro such there is a 1:1 relationship between
     # the filing system and a GitLab project. That relationship is stored
     # in CodeLinaro, so this function is for CodeLinaro use only.
+    print(row)
     fs_id = row[RESOURCE_ID].split("/")[1]
     project_details = get_project_details_from_efs_id(fs_id)
     if project_details is None:
@@ -630,9 +619,11 @@ def process_efs(row: dict):
         project_in_list["persistent_storage_cost"] = {}
     if "persistent_storage_pricelist_cost" not in project_in_list:
         project_in_list["persistent_storage_pricelist_cost"] = {}
-    add_to_efs_cost(project_in_list, "persistent_storage_cost", fs_id, storage_cost)
-    add_to_efs_cost(project_in_list, "persistent_storage_pricelist_cost", fs_id, pricelist_cost)
-    TOTAL_ALLOCATED += storage_cost # pylint: disable=undefined-variable
+    add_to_efs_cost(project_in_list, "persistent_storage_cost",
+                    fs_id, storage_cost)
+    add_to_efs_cost(project_in_list,
+                    "persistent_storage_pricelist_cost", fs_id, pricelist_cost)
+    TOTAL_ALLOCATED += storage_cost  # pylint: disable=undefined-variable
     output(
         f"Project {repo_id} EFS usage ({fs_id}) cost {storage_cost}", LogLevel.INFO
     )
@@ -666,7 +657,7 @@ def output(string: str, level: LogLevel):
     if level == LogLevel.DEBUG and not DEBUG:
         return
     if SUPPRESS_WARNINGS and level == LogLevel.WARNING:
-        SUPPRESSED_WARNING_COUNT += 1 # pylint: disable=undefined-variable
+        SUPPRESSED_WARNING_COUNT += 1  # pylint: disable=undefined-variable
         return
     # Add an appropriate prefix to the string
     if level == LogLevel.ERROR:
@@ -721,7 +712,7 @@ def perform_billing_analysis():
         check_environment_variables()
         set_up_cloudwatch()
         # Has a specific month & year been specified?
-        if PROCESS_SPECIFIED_MONTH is not None and PROCESS_SPECIFIED_YEAR is not None:
+        if PROCESS_SPECIFIED_MONTH != "" and PROCESS_SPECIFIED_YEAR != "":
             process_billing_report(
                 int(PROCESS_SPECIFIED_MONTH),
                 int(PROCESS_SPECIFIED_YEAR))
@@ -740,7 +731,7 @@ def perform_billing_analysis():
             process_billing_report(last_month, last_month_year)
         if not PROCESSING_ERROR:
             output("Processing has completed", LogLevel.INFO)
-    except Exception as exc: # pylint: disable=broad-exception-caught
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         output(
             "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
         output(str(exc), LogLevel.ERROR)
@@ -896,7 +887,8 @@ def check_overrides():
         SUPPRESS_WARNINGS, PROCESS_LAST_MONTH, PROCESS_THIS_MONTH, \
         PROCESS_SPECIFIED_MONTH, PROCESS_SPECIFIED_YEAR
     DEBUG = check_and_return("OVERRIDE_DEBUG", str(DEBUG)) == "True"
-    DEBUG_PROGRESS = check_and_return("OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
+    DEBUG_PROGRESS = check_and_return(
+        "OVERRIDE_DEBUG_PROGRESS", str(DEBUG_PROGRESS)) == "True"
     SAVE_TO_CODELINARO = check_and_return(
         "OVERRIDE_SAVE_TO_CODELINARO", str(SAVE_TO_CODELINARO)) == "True"
     SAVE_ALREADY_SAVED = check_and_return(
@@ -955,7 +947,7 @@ def check_environment_variables():
         dir_path = os.path.dirname(os.path.abspath(__file__))
         if os.path.exists(f"{dir_path}/price_list.json"):
             with open(f"{dir_path}/price_list.json", "rb") as file:
-                PRICE_LIST= json.load(file)
+                PRICE_LIST = json.load(file)
                 output("Price list loaded from file", LogLevel.INFO)
         else:
             print(f"No price list found in {dir_path}")
@@ -1336,8 +1328,12 @@ def equal_to_x_dp(value1: float, value2: float, dec_points: int = 10) -> bool:
     Returns:
         bool: true if they are equal to the number of decimal places, otherwise false
     """
-    str_value1 = "{value1:.{dp}f}".format(value1=value1, dp=dec_points) # pylint: disable=consider-using-f-string
-    str_value2 = "{value2:.{dp}f}".format(value2=value2, dp=dec_points) # pylint: disable=consider-using-f-string
+    # pylint: disable=consider-using-f-string
+    str_value1 = "{value1:.{dp}f}".format(
+        value1=value1, dp=dec_points)
+    # pylint: disable=consider-using-f-string
+    str_value2 = "{value2:.{dp}f}".format(
+        value2=value2, dp=dec_points)
     return str_value1 == str_value2
 
 
@@ -1509,7 +1505,8 @@ def process_job_details(
         if detail["job_id"] is None:
             if proj[UNBLENDED_COST] != "0.0000000000":
                 output(
-                    f"Node {resource_id} cost {proj[UNBLENDED_COST]} but no runners", LogLevel.DEBUG)
+                    f"Node {resource_id} cost {proj[UNBLENDED_COST]} but no runners",
+                    LogLevel.DEBUG)
             return
 
         # See if this has already been added to the job data
@@ -1632,7 +1629,7 @@ def add_cost_to_project(
 
 def job_times_for_slot(
         row: dict, job: dict) -> Tuple[Union[None, datetime.datetime],
-        Union[None, datetime.datetime]]:
+                                       Union[None, datetime.datetime]]:
     """Get job start & end times, adjusted for the current hour being worked on
 
     Args:
@@ -1700,7 +1697,8 @@ def get_ec2_rate(row: dict) -> float:
     if "ProcessorInfo" in instance and "SupportedArchitectures" in instance["ProcessorInfo"]:
         arch = instance["ProcessorInfo"]["SupportedArchitectures"][0]
     else:
-        output(f"No processor info found for instance type {instance_type}", LogLevel.ERROR)
+        output(
+            f"No processor info found for instance type {instance_type}", LogLevel.ERROR)
         return 0.0
     # Is there a GPU on this instance?
     if "GpuInfo" in instance and "Gpus" in instance["GpuInfo"]:
@@ -1739,7 +1737,8 @@ def get_fargate_rate(row: dict) -> float:
 
     # If we don't match, log it as an error but still return a number so
     # that processing continues.
-    output(f"Failed to match fargate cost {unblended_rate} in price list", LogLevel.ERROR)
+    output(
+        f"Failed to match fargate cost {unblended_rate} in price list", LogLevel.ERROR)
     print(json.dumps(row))
     return float(unblended_rate)
 
@@ -1961,8 +1960,9 @@ def process_pending_fargate_costs(
                 perc = project_network_usage[project][pipeline][job] * \
                     100.0 / total_bytes
                 output(
-                    f"Job {project}/{pipeline}/{job} used {perc:.2f}% of the NAT traffic", LogLevel.INFO)
-                cost = (network_total_cost * perc / 100.0)
+                    f"Job {project}/{pipeline}/{job} used {perc:.2f}% of the NAT traffic",
+                    LogLevel.INFO)
+                cost = network_total_cost * perc / 100.0
                 add_cost_to_project(project, pipeline, job, cost, cost)
 
     # The network cost has been shared out across the various Fargate projects, so nothing left
@@ -1970,7 +1970,8 @@ def process_pending_fargate_costs(
     return 0.0
 
 
-def add_project_network_usage(usage_dict: dict, project_id: str, pipeline_id: str, job_id: str, bytes_used: int):
+def add_project_network_usage(
+        usage_dict: dict, project_id: str, pipeline_id: str, job_id: str, bytes_used: int):
     """Add up the network usage, creating dicts as required
 
     Args:
@@ -1986,7 +1987,8 @@ def add_project_network_usage(usage_dict: dict, project_id: str, pipeline_id: st
     usage_dict[project_id][pipeline_id][job_id] += bytes_used
 
 
-def calculate_network_usage(nat_gateway: str, project_network_usage: dict, proj: dict, job_data: dict) -> int:
+def calculate_network_usage(
+        nat_gateway: str, project_network_usage: dict, proj: dict, job_data: dict) -> int:
     """Work out how much NAT traffic was generated by this job
 
     Args:
@@ -2156,7 +2158,8 @@ def add_to(cost_dict: dict, row: dict, key: Union[None, str] = None):
     cost = float(row[UNBLENDED_COST])
     # Need to set type: ignore here because we *know* that key cannot be
     # None yet pylance complains ...
-    add_cost_to_dict(cost_dict, row[USAGE_START_DATE], key, cost) # type: ignore
+    # type: ignore
+    add_cost_to_dict(cost_dict, row[USAGE_START_DATE], key, cost)
 
 
 def add_cost_to_dict(cost_dict: dict, date_time_str: str, key: str, cost: float):
@@ -2320,7 +2323,8 @@ def process_base_cost(row: dict):
     add_to(BASE_COSTS, row)
 
 
-def ec2_node_details(resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
+def ec2_node_details(
+        resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
     """Determine the project ID, build ID and pod name via the resource ID
 
     Args:
@@ -2355,7 +2359,7 @@ def ec2_node_details(resource_id: str, pod_start: datetime.datetime, pod_end: da
         ]
 
     response = []
-    fetch_job_times = (len(runner_list) > 1)
+    fetch_job_times = len(runner_list) > 1
     for runner in runner_list:
         parts = runner.split("project-")
         project_id = parts[1].split("-")[0]
@@ -2382,7 +2386,8 @@ def ec2_node_details(resource_id: str, pod_start: datetime.datetime, pod_end: da
     return response
 
 
-def fetch_job_times_from_gitlab(project_id: str, job_id: str) -> Tuple[datetime.datetime, datetime.datetime]:
+def fetch_job_times_from_gitlab(
+        project_id: str, job_id: str) -> Tuple[datetime.datetime, datetime.datetime]:
     """Get the CI job start & end times back from GitLab
 
     Args:
@@ -2404,11 +2409,9 @@ def fetch_job_times_from_gitlab(project_id: str, job_id: str) -> Tuple[datetime.
         header = {
             "PRIVATE-TOKEN": GITLAB_TOKEN
         }
-        response = requests.get(
+        response = safe_requests_get(
             f"{GITLAB_URL}api/v4/projects/{project_id}/jobs/{job_id}",
-            headers=header,
-            timeout=60
-        )
+            header)
         response.raise_for_status()
         data = response.json()
         save_data_to_cache(
@@ -2421,7 +2424,10 @@ def fetch_job_times_from_gitlab(project_id: str, job_id: str) -> Tuple[datetime.
     return dateutil_parser.isoparse(started_at), dateutil_parser.isoparse(finished_at)
 
 
-def get_data_from_cache(data_type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, Type]]:
+def get_data_from_cache(
+        data_type: str, identifier: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, Type]]:
     """Retrieve data from the general purpose analysis cache
 
     Args:
@@ -2443,11 +2449,17 @@ def get_data_from_cache(data_type: str, identifier: str, start_time: Union[datet
             values["start_time"] == enc_start and \
                 values["end_time"] == end_end:
             return True, values["data"]
-    print(f"Cache miss looking for {data_type} with id {identifier}, start time {start_time} and end time {end_time}")
+    print(
+        f"Cache miss looking for {data_type} with id {identifier},"
+        f" start time {start_time} and end time {end_time}")
     return False, None
 
 
-def save_data_to_cache(data_type: str, identifier: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], data: Union[None, str, dict, list]):
+def save_data_to_cache(
+        data_type: str, identifier: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None],
+        data: Union[None, str, dict, list]):
     """Save the data to the cache
 
     Args:
@@ -2475,7 +2487,10 @@ def save_data_to_cache(data_type: str, identifier: str, start_time: Union[dateti
     )
 
 
-def get_runner_name_from_cache(ec2_hostname: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, list]]:
+def get_runner_name_from_cache(
+        ec2_hostname: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, list]]:
     """Try to find the runner name in the cache
 
     Args:
@@ -2489,7 +2504,10 @@ def get_runner_name_from_cache(ec2_hostname: str, start_time: Union[datetime.dat
     return get_data_from_cache("ec2_runner_name", ec2_hostname, start_time, end_time)
 
 
-def save_runner_name_to_cache(ec2_hostname: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], runner_name: list):
+def save_runner_name_to_cache(
+        ec2_hostname: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None], runner_name: list):
     """Save the runner name in the cache
 
     Args:
@@ -2502,7 +2520,10 @@ def save_runner_name_to_cache(ec2_hostname: str, start_time: Union[datetime.date
                        start_time, end_time, runner_name)
 
 
-def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Union[None, list]:
+def get_runner_name(
+        ec2_hostname: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Union[None, list]:
     """Find the log entry for the runner pod getting created
 
     Args:
@@ -2523,7 +2544,8 @@ def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None
             CW_CLUSTER_LOGS, start_time, end_time)
     if start_time is None or end_time is None:
         output(
-            f"Start/end time to query {CW_CLUSTER_LOGS} for runner name for {ec2_hostname} is out of range",
+            f"Start/end time to query {CW_CLUSTER_LOGS} for runner name for"
+            f" {ec2_hostname} is out of range",
             LogLevel.WARNING)
         save_runner_name_to_cache(ec2_hostname, start_time, end_time, [])
         return []
@@ -2555,7 +2577,10 @@ def get_runner_name(ec2_hostname: str, start_time: Union[datetime.datetime, None
     return response
 
 
-def get_ec2_hostname_from_cache(resource_id: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, str]]:
+def get_ec2_hostname_from_cache(
+        resource_id: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, str]]:
     """Try to find the hostname name in the cache
 
     Args:
@@ -2569,7 +2594,11 @@ def get_ec2_hostname_from_cache(resource_id: str, start_time: Union[datetime.dat
     return get_data_from_cache("ec2_hostname", resource_id, start_time, end_time)
 
 
-def save_ec2_hostname_to_cache(resource_id: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], hostname: Union[str, None]):
+def save_ec2_hostname_to_cache(
+        resource_id: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None],
+        hostname: Union[str, None]):
     """Save the runner name in the cache
 
     Args:
@@ -2582,7 +2611,10 @@ def save_ec2_hostname_to_cache(resource_id: str, start_time: Union[datetime.date
                        start_time, end_time, hostname)
 
 
-def ec2_node_hostname(resource_id: str, start_time: datetime.datetime, end_time: datetime.datetime) -> Union[None, str]:
+def ec2_node_hostname(
+        resource_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime) -> Union[None, str]:
     """Use the cluster logs to find the hostname for this instance
 
     Args:
@@ -2663,7 +2695,8 @@ def project_id_from_fargate_id(resource_id: str) -> Union[None, str]:
     Returns:
         Union[None, str]: the project ID from the resource ID or None if it isn't a project resource
     """
-    # e.g. arn:aws:eks:us-east-1:AWS-ACCOUNT-ID:pod/EKS-CLUSTER-NAME/EKS-FARGATE-NAMESPACE/runner-agwxvf7b-project-5-concurrent-0j9nvc/319228f6-6d46-4bb5-910e-a4ed39927b6c
+    # e.g. arn:aws:eks:us-east-1:AWS-ACCOUNT-ID:pod/EKS-CLUSTER-NAME/EKS-FARGATE-NAMESPACE/
+    #      runner-agwxvf7b-project-5-concurrent-0j9nvc/319228f6-6d46-4bb5-910e-a4ed39927b6c
     parts = resource_id.split("project-")
     if len(parts) != 2:
         # This shouldn't happen ...
@@ -2671,7 +2704,8 @@ def project_id_from_fargate_id(resource_id: str) -> Union[None, str]:
     return parts[1].split("-")[0]
 
 
-def fargate_pod_details(resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
+def fargate_pod_details(
+        resource_id: str, pod_start: datetime.datetime, pod_end: datetime.datetime) -> list:
     """Determine the project ID, build ID and pod name via the resource ID
 
     Args:
@@ -2680,7 +2714,8 @@ def fargate_pod_details(resource_id: str, pod_start: datetime.datetime, pod_end:
         pod_end (datetime.datetime): ... to this time
 
     Returns:
-        list: all of the job details as a single-element list (to be compatible with the EC2 results)
+        list: all of the job details as a single-element list
+              (to be compatible with the EC2 results)
     """
     project_id = project_id_from_fargate_id(resource_id)
     if project_id is None:
@@ -2706,7 +2741,11 @@ def fargate_pod_details(resource_id: str, pod_start: datetime.datetime, pod_end:
     return response
 
 
-def get_ci_ids_from_cache(runner_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, str], Union[None, str]]:
+def get_ci_ids_from_cache(
+        runner_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[
+            bool, Union[None, str], Union[None, str]]:
     """Try to find the CI IDs in the cache
 
     Args:
@@ -2715,7 +2754,8 @@ def get_ci_ids_from_cache(runner_name: str, start_time: Union[datetime.datetime,
         end_time (Union[datetime.datetime, None]): end time
 
     Returns:
-        Tuple[bool, Union[None, str], Union[None, str]]: did we find the results and, if we did, what were the pipeline & job IDs?
+        Tuple[bool, Union[None, str], Union[None, str]]:
+            did we find the results and, if we did, what were the pipeline & job IDs?
     """
     found, data = get_data_from_cache(
         "ci_ids", runner_name, start_time, end_time)
@@ -2724,7 +2764,12 @@ def get_ci_ids_from_cache(runner_name: str, start_time: Union[datetime.datetime,
     return False, "", ""
 
 
-def save_ci_ids_to_cache(runner_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], pipeline_id: Union[str, None], job_id: Union[str, None]):
+def save_ci_ids_to_cache(
+        runner_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None],
+        pipeline_id: Union[str, None],
+        job_id: Union[str, None]):
     """Save the CI IDs in the cache
 
     Args:
@@ -2738,7 +2783,10 @@ def save_ci_ids_to_cache(runner_name: str, start_time: Union[datetime.datetime, 
                        end_time, {"pipeline_id": pipeline_id, "job_id": job_id})
 
 
-def ci_ids_from_runner_logs(runner_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[Union[None, str], Union[None, str]]:
+def ci_ids_from_runner_logs(
+        runner_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[Union[None, str], Union[None, str]]:
     """Scan GitLab Runner logs for this build
 
     Args:
@@ -2759,7 +2807,8 @@ def ci_ids_from_runner_logs(runner_name: str, start_time: Union[datetime.datetim
             CW_CLUSTER_LOGS, start_time, end_time)
     if start_time is None or end_time is None:
         output(
-            f"Start/end time to query {CW_CLUSTER_LOGS} for job ID for {runner_name} is out of range",
+            f"Start/end time to query {CW_CLUSTER_LOGS} for job ID for"
+            f" {runner_name} is out of range",
             LogLevel.WARNING)
         save_ci_ids_to_cache(runner_name, start_time, end_time, None, None)
         return None, None
@@ -2832,7 +2881,11 @@ def extract_nat_gateway(resource_id: str) -> Union[None, str]:
     return parts[1]
 
 
-def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_time: datetime.datetime) -> Tuple[Union[None, datetime.datetime], Union[None, datetime.datetime]]:
+def sanity_check_query_times(
+        log_group: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime) -> Tuple[
+            Union[None, datetime.datetime], Union[None, datetime.datetime]]:
     """Make sure start_time & end_time are valid for this group
 
     Args:
@@ -2894,7 +2947,10 @@ def sanity_check_query_times(log_group: str, start_time: datetime.datetime, end_
     return start_time, end_time
 
 
-def get_pod_ip_from_cache(pod_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, str]]:
+def get_pod_ip_from_cache(
+        pod_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Tuple[bool, Union[None, str]]:
     """Try to find the pod IP address in the cache
 
     Args:
@@ -2908,7 +2964,10 @@ def get_pod_ip_from_cache(pod_name: str, start_time: Union[datetime.datetime, No
     return get_data_from_cache("pod_ip", pod_name, start_time, end_time)
 
 
-def save_pod_ip_to_cache(pod_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None], ip_address: Union[str, None]):
+def save_pod_ip_to_cache(
+        pod_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None], ip_address: Union[str, None]):
     """Save the pod IP address in the cache
 
     Args:
@@ -2920,7 +2979,10 @@ def save_pod_ip_to_cache(pod_name: str, start_time: Union[datetime.datetime, Non
     save_data_to_cache("pod_ip", pod_name, start_time, end_time, ip_address)
 
 
-def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], end_time: Union[datetime.datetime, None]) -> Union[None, str]:
+def get_ip_for_pod(
+        pod_name: str,
+        start_time: Union[datetime.datetime, None],
+        end_time: Union[datetime.datetime, None]) -> Union[None, str]:
     """Query the CloudWatch logs to retrieve the associated IP address
 
     Args:
@@ -2940,7 +3002,8 @@ def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], en
             CW_CLUSTER_LOGS, start_time, end_time)
     if start_time is None or end_time is None:
         output(
-            f"Start/end time to query {CW_CLUSTER_LOGS} for IP address for {pod_name} is out of range",
+            f"Start/end time to query {CW_CLUSTER_LOGS} for IP address "
+            f"for {pod_name} is out of range",
             LogLevel.WARNING)
         return None
 
@@ -2975,7 +3038,8 @@ def get_ip_for_pod(pod_name: str, start_time: Union[datetime.datetime, None], en
             break
     if ip_address is None:
         output(
-            f"Warning! Unable to determine IP address for pod {pod_name}, {start_time} -> {end_time}",
+            f"Warning! Unable to determine IP address for pod {pod_name}, "
+            f"{start_time} -> {end_time}",
             LogLevel.WARNING)
     save_pod_ip_to_cache(pod_name, start_time, end_time, ip_address)
     return ip_address
@@ -2997,7 +3061,11 @@ def value_from_cloudwatch_log(dict_of_values: dict, key_name: str) -> Union[str,
     return None
 
 
-def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime, end_time: datetime.datetime) -> "list[dict]":
+def get_nat_traffic(
+        nat_id: str,
+        ip_address: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime) -> "list[dict]":
     """Get flow records for the gateway + IP address combo
 
     Args:
@@ -3014,12 +3082,15 @@ def get_nat_traffic(nat_id: str, ip_address: str, start_time: datetime.datetime,
     response = client.describe_nat_gateways(
         NatGatewayIds=[nat_id]
     )
-    eni = response["NatGateways"][0]["NatGatewayAddresses"][0]["NetworkInterfaceId"] # type: ignore
+    # type: ignore
+    eni = response["NatGateways"][0]["NatGatewayAddresses"][0]["NetworkInterfaceId"]
 
     query_string = (
         "fields @timestamp, @message"
         f" | filter @logStream = \"{eni}-accept\""
-        "| parse @message \"* * * * * * * * * * *\" as bytes, dstAddr, srcAddr, pktDstaddr, pktSrcaddr, logStatus, instanceId, pktSrcAwsService, pktDstAwsService, flowDirection, trafficPath"
+        "| parse @message \"* * * * * * * * * * *\" as bytes, dstAddr, srcAddr, pktDstaddr, "
+        "pktSrcaddr, logStatus, instanceId, pktSrcAwsService, pktDstAwsService, flowDirection, "
+        "trafficPath"
         f" | filter srcAddr = \"{ip_address}\" or dstAddr = \"{ip_address}\""
         " | sort @timestamp desc"
     )
@@ -3053,7 +3124,8 @@ def process_s3_storage_costs(row: dict):
     if ASSUME_PROCESSING_ROLE is None:
         s3_resource = boto3.resource("s3")
     else:
-        assumed_role_object = assume_role(ASSUME_PROCESSING_ROLE, "s3_resource")
+        assumed_role_object = assume_role(
+            ASSUME_PROCESSING_ROLE, "s3_resource")
         credentials = assumed_role_object['Credentials']
         s3_resource = boto3.resource(
             "s3",
@@ -3091,9 +3163,37 @@ def process_s3_storage_costs(row: dict):
             project_in_list["cache_pricelist_cost"] = 0.0
         cost = cache_cost * perc / 100.0
         project_in_list["cache_cost"] += cost
-        project_in_list["cache_pricelist_cost"] += (pricelist_cost * perc / 100.0)
+        project_in_list["cache_pricelist_cost"] += (
+            pricelist_cost * perc / 100.0)
         TOTAL_ALLOCATED += cost
     processed_this_row(row)
+
+
+def safe_requests_get(url, headers=None):
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            timeout=60
+        )
+        return response
+    except Exception as exc:
+        sys.exit(f"GET to {url} failed with exception: {exc}")
+
+
+def safe_requests_post(
+        url, headers=None, body=None):
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=60
+        )
+        return response
+    except Exception as exc:
+        print(f"Payload: {json.dumps(body)}")
+        sys.exit(f"POST to {url} failed with exception: {exc}")
 
 
 if __name__ == "__main__":
