@@ -2534,9 +2534,11 @@ def get_runner_name(
     Returns:
         Union[None, list]: a list of one or more runners or None if there weren't any
     """
+    print(f"get_runner_name: {ec2_hostname}, {start_time}, {end_time}")
     found, runner_name = get_runner_name_from_cache(
         ec2_hostname, start_time, end_time)
     if found:
+        print(f"get_runner_name: found in cache: {runner_name}")
         return runner_name
 
     if start_time is not None and end_time is not None and CW_CLUSTER_LOGS is not None:
@@ -2569,6 +2571,7 @@ def get_runner_name(
     for result in results:
         name = value_from_cloudwatch_log(result, "objectRef.name")
         response.append(name)
+        print(f"get_runner_name: found {name}")
     if len(response) == 0:
         output(
             f"No runner nodes found for {ec2_hostname}, {start_time} -> {end_time}",
