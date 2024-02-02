@@ -97,7 +97,11 @@ EXPECTED_BASE_COSTS = [
     # but we need to allow for them otherwise they get classed as unallocated.
     "AWSQueueService",
     "AmazonSNS",
-    "AmazonDynamoDB"
+    "AmazonDynamoDB",
+    # The following can be caused by using centralised Config management
+    "AWSGlue",
+    "AWSMigrationHubRefactorSpaces"
+    "AWSSystemsManager"
 ]
 
 
@@ -410,7 +414,7 @@ def get_token_from_auth0() -> str:
     """
     global AUTH0_TOKEN
     # If we've got a cached token, make sure it is still valid. If not, clear
-    # it so that we fetch a new one.
+    # it so that we fetch a new one. It is not possible to refresh M2M tokens.
     if not valid_jwt(AUTH0_TOKEN):
         AUTH0_TOKEN = ""
     if AUTH0_TOKEN == "":
@@ -593,7 +597,6 @@ def process_efs(row: dict):
     # EFS is set up on CodeLinaro such there is a 1:1 relationship between
     # the filing system and a GitLab project. That relationship is stored
     # in CodeLinaro, so this function is for CodeLinaro use only.
-    print(row)
     fs_id = row[RESOURCE_ID].split("/")[1]
     project_details = get_project_details_from_efs_id(fs_id)
     if project_details is None:
@@ -2258,6 +2261,7 @@ def process_ec2_instance(row: dict):
                 name[:len(PROVISIONER_NAME)] == PROVISIONER_NAME:
             # It must be a Node EC2 instance so hold it for now.
             append_to(PENDING_INSTANCE_COSTS, row)
+            # print(row[RESOURCE_ID], row[USER_NAME_TAG])
             if DEBUG_INSTANCE_COSTS:
                 row[UNBLENDED_COST] = 0.0
             return
@@ -2340,6 +2344,7 @@ def ec2_node_details(
     if hostname is not None:
         # Having got the hostname, find the log entry for when the runner pod gets
         # created.
+        output(f"ec2_node_details: {resource_id} maps to {hostname}", LogLevel.DEBUG)
         runner_list = get_runner_name(hostname, pod_start, pod_end)
     else:
         runner_list = []
@@ -2362,27 +2367,30 @@ def ec2_node_details(
     fetch_job_times = len(runner_list) > 1
     for runner in runner_list:
         parts = runner.split("project-")
-        project_id = parts[1].split("-")[0]
-        pipeline_id, job_id = ci_ids_from_runner_logs(
-            runner, pod_start, pod_end)
-        if fetch_job_times and job_id is not None:
-            job_start, job_end = fetch_job_times_from_gitlab(
-                project_id, job_id)
+        if len(parts) < 2:
+            output(f"Unable to parse runner name of '{runner}'", LogLevel.INFO)
         else:
-            job_start = None
-            job_end = None
-        response.append(
-            {
-                "project_id": project_id,
-                "pipeline_id": pipeline_id,
-                "job_id": job_id,
-                "pod_name": runner,
-                "pod_start": pod_start,
-                "pod_end": pod_end,
-                "job_start": job_start,
-                "job_end": job_end
-            }
-        )
+            project_id = parts[1].split("-")[0]
+            pipeline_id, job_id = ci_ids_from_runner_logs(
+                runner, pod_start, pod_end)
+            if fetch_job_times and job_id is not None:
+                job_start, job_end = fetch_job_times_from_gitlab(
+                    project_id, job_id)
+            else:
+                job_start = None
+                job_end = None
+            response.append(
+                {
+                    "project_id": project_id,
+                    "pipeline_id": pipeline_id,
+                    "job_id": job_id,
+                    "pod_name": runner,
+                    "pod_start": pod_start,
+                    "pod_end": pod_end,
+                    "job_start": job_start,
+                    "job_end": job_end
+                }
+            )
     return response
 
 
@@ -2534,11 +2542,11 @@ def get_runner_name(
     Returns:
         Union[None, list]: a list of one or more runners or None if there weren't any
     """
-    print(f"get_runner_name: {ec2_hostname}, {start_time}, {end_time}")
+    output(f"get_runner_name: {ec2_hostname}, {start_time}, {end_time}", LogLevel.DEBUG)
     found, runner_name = get_runner_name_from_cache(
         ec2_hostname, start_time, end_time)
     if found:
-        print(f"get_runner_name: found in cache: {runner_name}")
+        output(f"get_runner_name: found in cache: {runner_name}", LogLevel.DEBUG)
         return runner_name
 
     if start_time is not None and end_time is not None and CW_CLUSTER_LOGS is not None:
@@ -2571,7 +2579,7 @@ def get_runner_name(
     for result in results:
         name = value_from_cloudwatch_log(result, "objectRef.name")
         response.append(name)
-        print(f"get_runner_name: found {name}")
+        output(f"get_runner_name: found {name}", LogLevel.DEBUG)
     if len(response) == 0:
         output(
             f"No runner nodes found for {ec2_hostname}, {start_time} -> {end_time}",
@@ -3180,7 +3188,7 @@ def safe_requests_get(url, headers=None):
             timeout=60
         )
         return response
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-exception-caught
         sys.exit(f"GET to {url} failed with exception: {exc}")
 
 
@@ -3194,7 +3202,7 @@ def safe_requests_post(
             timeout=60
         )
         return response
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-exception-caught
         print(f"Payload: {json.dumps(body)}")
         sys.exit(f"POST to {url} failed with exception: {exc}")
 
