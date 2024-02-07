@@ -100,8 +100,9 @@ EXPECTED_BASE_COSTS = [
     "AmazonDynamoDB",
     # The following can be caused by using centralised Config management
     "AWSGlue",
-    "AWSMigrationHubRefactorSpaces"
-    "AWSSystemsManager"
+    "AWSMigrationHubRefactorSpaces",
+    "AWSSystemsManager",
+    "AWSConfig"
 ]
 
 
@@ -402,6 +403,11 @@ def valid_jwt(token: str) -> bool:
                    audience=AUTH0_CLIENT_AUDIENCE,
                    leeway=1)
     except jwt.ExpiredSignatureError:
+        # Decode it again without verification so that we can extract
+        # the expiration date
+        decoded = jwt.decode(token, options={"verify_signature": False})
+        exp = decoded["exp"]
+        output(f"Existing Auth0 token has expired: {exp}", LogLevel.INFO)
         return False
     return True
 
@@ -430,6 +436,8 @@ def get_token_from_auth0() -> str:
             output(json.dumps(body), LogLevel.INFO)
         response.raise_for_status()
         AUTH0_TOKEN = response.json()["access_token"]
+        output("Fetched new Auth0 token", LogLevel.INFO)
+        output(AUTH0_TOKEN, LogLevel.INFO)
     return AUTH0_TOKEN
 
 
@@ -579,8 +587,9 @@ def get_project_details_from_efs_id(efs_id: str) -> Union[None, dict]:
         response = safe_requests_get(url, header)
         if response.status_code > 299:
             output(
-                f"Got {response.status_code} when querying EFS "
-                f"ID {efs_id} ({response.text})", LogLevel.WARNING
+                f"Got {response.status_code} when querying "
+                f"{CLO_API_URL}/projects/systems/persistent-storage/{efs_id} "
+                f"({response.text})", LogLevel.WARNING
             )
             return None
         data = response.json()
@@ -1013,6 +1022,8 @@ def process_s3_object(s3_key: list, date_range: str):
                                           "PENDING_INSTANCE_COSTS")
         total_test += sanity_check_totals(PENDING_EC2NW_COSTS,
                                           "PENDING_EC2NW_COSTS")
+        # total_test += sanity_check_totals(PENDING_EC2VPC_COSTS,
+        #                                   "PENDING_EC2VPC_COSTS")
         total_test += totalise_base_costs(False)
         total_test += totalise_unallocated_costs()
         output(
@@ -1056,6 +1067,9 @@ def process_s3_object(s3_key: list, date_range: str):
         if start in PENDING_EC2NW_COSTS:
             process_pending_ec2nw_costs(start)
 
+        # if start in PENDING_EC2VPC_COSTS:
+        #     process_pending_ec2vpc_costs(start)
+
         # Add any unallocated NAT cost to the base cost
         if nat_traffic_cost != 0.0:
             add_cost_to_dict(BASE_COSTS, start,
@@ -1086,6 +1100,22 @@ def check_for_unprocessed_ec2nw_costs():
                     LogLevel.WARNING
                 )
                 add_to(UNALLOCATED_COSTS, line)
+
+
+# def check_for_unprocessed_ec2vpc_costs():
+#     """If there are unprocessed ec2vpc costs due to instances not present in CUR, put them
+#        (temporarily) as unallocated.
+#     """
+#     for date in PENDING_EC2VPC_COSTS:
+#         for line in PENDING_EC2VPC_COSTS[date]:
+#             if line[LINE_ITEM_ID] != "" and missing_ec2_instance(line[RESOURCE_ID]):
+#                 output(
+#                     "Moving unprocessed EC2VPC cost to unallocated because resource "
+#                     f"ID {line[RESOURCE_ID]} cannot be found in CUR file. This should "
+#                     "be a temporary situation until the next file is processed.",
+#                     LogLevel.WARNING
+#                 )
+#                 add_to(UNALLOCATED_COSTS, line)
 
 
 def missing_ec2_instance(resource_id: str) -> bool:
@@ -1130,6 +1160,7 @@ PENDING_NATGW_COSTS = {}
 PENDING_VOLUME_COSTS = {}
 PENDING_INSTANCE_COSTS = {}
 PENDING_EC2NW_COSTS = {}
+# PENDING_EC2VPC_COSTS = {}
 
 DEFAULT_NODE_INSTANCES = []
 DEFAULT_NODE_GROUPS = []
@@ -1152,7 +1183,7 @@ def initialise_billing_globals():
     """ (Re)initialise the globals used by the billing code """
     global PROJECT_COSTS, BASE_COSTS, UNALLOCATED_COSTS
     global PENDING_FARGATE_COSTS, PENDING_NATGW_COSTS, PENDING_VOLUME_COSTS
-    global PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS
+    global PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS #, PENDING_EC2VPC_COSTS
     global DEFAULT_NODE_INSTANCES, DEFAULT_NODE_GROUPS, USAGE_START_KEYS, EC2_INSTANCE_IDS
     global TOTAL_COST_FROM_CUR, TOTAL_ALLOCATED
     global CUR_FILE_ROW_COUNT, CUR_FILE_PROCESSED_COUNT, CUR_FILE
@@ -1167,6 +1198,7 @@ def initialise_billing_globals():
     PENDING_VOLUME_COSTS = {}
     PENDING_INSTANCE_COSTS = {}
     PENDING_EC2NW_COSTS = {}
+    # PENDING_EC2VPC_COSTS = {}
 
     DEFAULT_NODE_INSTANCES = []
     DEFAULT_NODE_GROUPS = []
@@ -1379,6 +1411,7 @@ def totalise_costs(date_range: str, cur_file: list):
     sanity_check_pending(PENDING_VOLUME_COSTS, "PENDING_VOLUME_COSTS")
     sanity_check_pending(PENDING_INSTANCE_COSTS, "PENDING_INSTANCE_COSTS")
     sanity_check_pending(PENDING_EC2NW_COSTS, "PENDING_EC2NW_COSTS")
+    # sanity_check_pending(PENDING_EC2VPC_COSTS, "PENDING_EC2VPC_COSTS")
 
     if SUPPRESSED_WARNING_COUNT != 0:
         output(
@@ -2102,6 +2135,8 @@ def process_cur_row(row: dict, match_account: Union[str, None]):
         process_s3(row)
     elif code == "AmazonEFS":
         process_efs(row)
+    elif code == "AmazonVPC":
+        process_vpc(row)
     else:
         add_to(UNALLOCATED_COSTS, row)
     CUR_FILE_ROW_COUNT += 1
@@ -2316,6 +2351,25 @@ def process_s3(row: dict):
         process_s3_storage_costs(row)
     else:
         add_to(BASE_COSTS, row, key=resource_id_key(row))
+
+
+def process_vpc(row: dict):
+    """Process the VPC costs
+    
+    Args:
+        row (dict): CUR file row
+    """
+    # The expected VPC cost is for a public IPv4 address. We need to associate
+    # that with any CI job that might have used it.
+    if row[UNBLENDED_COST] == "0.0000000000":
+        output(f"{row[USAGE_TYPE]} has no cost - ignoring", LogLevel.WARNING)
+        return
+    if row[USAGE_TYPE].endswith("-PublicIPv4:InUseAddress"):
+        # Mark it as unallocated for now.
+        add_to(UNALLOCATED_COSTS, row)
+    else:
+        output(f"Unexpected VPC cost {row[USAGE_TYPE]}", LogLevel.ERROR)
+        output(json.dumps(row), LogLevel.ERROR)
 
 
 def process_base_cost(row: dict):
