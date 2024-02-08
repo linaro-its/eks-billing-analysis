@@ -74,6 +74,7 @@ PRICE_LIST = None
 # Constants for frequently used strings, to keep Sonar happy.
 ANALYSIS_LOG_GROUP = "ci-billing-analysis"
 INSTANCE_ID = "resourceTags/user:InstanceID"
+NODE_INSTANCE_ID = "resourceTags/node.k8s.amazonaws.com/instance_id"
 LINE_ITEM_ID = "identity/LineItemId"
 NODEGROUP_NAME_TAG = "resourceTags/user:eks:nodegroup-name"
 PRODUCT_CODE = "lineItem/ProductCode"
@@ -1022,8 +1023,8 @@ def process_s3_object(s3_key: list, date_range: str):
                                           "PENDING_INSTANCE_COSTS")
         total_test += sanity_check_totals(PENDING_EC2NW_COSTS,
                                           "PENDING_EC2NW_COSTS")
-        # total_test += sanity_check_totals(PENDING_EC2VPC_COSTS,
-        #                                   "PENDING_EC2VPC_COSTS")
+        total_test += sanity_check_totals(PENDING_EC2VPC_COSTS,
+                                          "PENDING_EC2VPC_COSTS")
         total_test += totalise_base_costs(False)
         total_test += totalise_unallocated_costs()
         output(
@@ -1067,8 +1068,8 @@ def process_s3_object(s3_key: list, date_range: str):
         if start in PENDING_EC2NW_COSTS:
             process_pending_ec2nw_costs(start)
 
-        # if start in PENDING_EC2VPC_COSTS:
-        #     process_pending_ec2vpc_costs(start)
+        if start in PENDING_EC2VPC_COSTS:
+            process_pending_ec2vpc_costs(start)
 
         # Add any unallocated NAT cost to the base cost
         if nat_traffic_cost != 0.0:
@@ -1102,20 +1103,34 @@ def check_for_unprocessed_ec2nw_costs():
                 add_to(UNALLOCATED_COSTS, line)
 
 
-# def check_for_unprocessed_ec2vpc_costs():
-#     """If there are unprocessed ec2vpc costs due to instances not present in CUR, put them
-#        (temporarily) as unallocated.
-#     """
-#     for date in PENDING_EC2VPC_COSTS:
-#         for line in PENDING_EC2VPC_COSTS[date]:
-#             if line[LINE_ITEM_ID] != "" and missing_ec2_instance(line[RESOURCE_ID]):
-#                 output(
-#                     "Moving unprocessed EC2VPC cost to unallocated because resource "
-#                     f"ID {line[RESOURCE_ID]} cannot be found in CUR file. This should "
-#                     "be a temporary situation until the next file is processed.",
-#                     LogLevel.WARNING
-#                 )
-#                 add_to(UNALLOCATED_COSTS, line)
+def retrieve_eni_instance_id(line: dict) -> str:
+    """Try to find an instance ID from either the user:InstanceID tag or from
+    user:node.k8s.amazonaws.com/instance_id
+    """
+    if INSTANCE_ID in line and line[INSTANCE_ID] != "":
+        return line[INSTANCE_ID]
+    if NODE_INSTANCE_ID in line and line[NODE_INSTANCE_ID] != "":
+        return line[NODE_INSTANCE_ID]
+    return None
+
+
+def check_for_unprocessed_ec2vpc_costs():
+    """If there are unprocessed ec2vpc costs due to instances not present in CUR, put them
+       (temporarily) as unallocated.
+    """
+    for date in PENDING_EC2VPC_COSTS:
+        for line in PENDING_EC2VPC_COSTS[date]:
+            instance_id = retrieve_eni_instance_id(line)
+            if line[LINE_ITEM_ID] != "" and \
+                instance_id is not None and \
+                    missing_ec2_instance(line[RESOURCE_ID]):
+                output(
+                    "Moving unprocessed EC2VPC cost to unallocated because resource "
+                    f"ID {instance_id} cannot be found in CUR file. This should "
+                    "be a temporary situation until the next file is processed.",
+                    LogLevel.WARNING
+                )
+                add_to(UNALLOCATED_COSTS, line)
 
 
 def missing_ec2_instance(resource_id: str) -> bool:
@@ -1160,7 +1175,7 @@ PENDING_NATGW_COSTS = {}
 PENDING_VOLUME_COSTS = {}
 PENDING_INSTANCE_COSTS = {}
 PENDING_EC2NW_COSTS = {}
-# PENDING_EC2VPC_COSTS = {}
+PENDING_EC2VPC_COSTS = {}
 
 DEFAULT_NODE_INSTANCES = []
 DEFAULT_NODE_GROUPS = []
@@ -1183,7 +1198,7 @@ def initialise_billing_globals():
     """ (Re)initialise the globals used by the billing code """
     global PROJECT_COSTS, BASE_COSTS, UNALLOCATED_COSTS
     global PENDING_FARGATE_COSTS, PENDING_NATGW_COSTS, PENDING_VOLUME_COSTS
-    global PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS #, PENDING_EC2VPC_COSTS
+    global PENDING_INSTANCE_COSTS, PENDING_EC2NW_COSTS, PENDING_EC2VPC_COSTS
     global DEFAULT_NODE_INSTANCES, DEFAULT_NODE_GROUPS, USAGE_START_KEYS, EC2_INSTANCE_IDS
     global TOTAL_COST_FROM_CUR, TOTAL_ALLOCATED
     global CUR_FILE_ROW_COUNT, CUR_FILE_PROCESSED_COUNT, CUR_FILE
@@ -1198,7 +1213,7 @@ def initialise_billing_globals():
     PENDING_VOLUME_COSTS = {}
     PENDING_INSTANCE_COSTS = {}
     PENDING_EC2NW_COSTS = {}
-    # PENDING_EC2VPC_COSTS = {}
+    PENDING_EC2VPC_COSTS = {}
 
     DEFAULT_NODE_INSTANCES = []
     DEFAULT_NODE_GROUPS = []
@@ -1411,7 +1426,7 @@ def totalise_costs(date_range: str, cur_file: list):
     sanity_check_pending(PENDING_VOLUME_COSTS, "PENDING_VOLUME_COSTS")
     sanity_check_pending(PENDING_INSTANCE_COSTS, "PENDING_INSTANCE_COSTS")
     sanity_check_pending(PENDING_EC2NW_COSTS, "PENDING_EC2NW_COSTS")
-    # sanity_check_pending(PENDING_EC2VPC_COSTS, "PENDING_EC2VPC_COSTS")
+    sanity_check_pending(PENDING_EC2VPC_COSTS, "PENDING_EC2VPC_COSTS")
 
     if SUPPRESSED_WARNING_COUNT != 0:
         output(
@@ -1886,6 +1901,7 @@ def process_pending_instance_costs(start_time: str):
             add_to(BASE_COSTS, instance)
         check_volume_costs(resource_id, job_data[resource_id])
         check_network_costs(resource_id, job_data[resource_id])
+        check_ipv4_costs(resource_id, job_data[resource_id])
 
 
 def check_volume_costs(resource_id: str, job_data: list):
@@ -1933,6 +1949,26 @@ def check_network_costs(resource_id: str, job_data: list):
                     add_to(BASE_COSTS, network)
 
 
+def check_ipv4_costs(resource_id: str, job_data: list):
+    """Find any IPv4 costs but only add them to the project costs once.
+
+    Args:
+        resource_id (str): resource ID to find associated IPv4 costs
+        job_data (list): jobs that ran on this instance
+    """
+    for key in PENDING_EC2VPC_COSTS:
+        for entry in PENDING_EC2VPC_COSTS[key]:
+            instance_id = retrieve_eni_instance_id(entry)
+            if instance_id is not None and instance_id == resource_id:
+                if len(job_data) != 0:
+                    add_project_build_cost(job_data, entry, "ipv4")
+                else:
+                    output(
+                        f"Adding IPv4 costs for {instance_id} to base (no runners)",
+                        LogLevel.DEBUG)
+                    add_to(BASE_COSTS, entry)
+
+
 def process_pending_ec2nw_costs(start_time: str):
     """Process any EC2 network costs that were generated by the nodes in the default node group
 
@@ -1942,6 +1978,18 @@ def process_pending_ec2nw_costs(start_time: str):
     for network in PENDING_EC2NW_COSTS[start_time]:
         if network[RESOURCE_ID] in DEFAULT_NODE_INSTANCES:
             add_to(BASE_COSTS, network)
+
+
+def process_pending_ec2vpc_costs(start_time: str):
+    """Process any IPv4 charges that were generated by the nodes in the default node group
+
+    Args:
+        start_time (str): the time block of costs to process
+    """
+    for entry in PENDING_EC2VPC_COSTS[start_time]:
+        instance_id = retrieve_eni_instance_id(entry)
+        if instance_id is not None and instance_id in DEFAULT_NODE_INSTANCES:
+            add_to(BASE_COSTS, entry)
 
 
 def process_pending_fargate_costs(
