@@ -402,7 +402,7 @@ def valid_jwt(token: str) -> bool:
                    key=signing_key.key,
                    algorithms=[header_data['alg'], ],
                    audience=AUTH0_CLIENT_AUDIENCE,
-                   leeway=1)
+                   leeway=10)
     except jwt.ExpiredSignatureError:
         # Decode it again without verification so that we can extract
         # the expiration date
@@ -989,7 +989,7 @@ def process_s3_object(s3_key: list, date_range: str):
         s3_key (list): list of S3 file keys from the manifest
     """
     initialise_billing_globals()
-    print(f"{len(s3_key)} CUR file(s) to process ...")
+    output(f"{len(s3_key)} CUR file(s) to process ...", LogLevel.INFO)
     # If we are assuming a role to read the CUR file,
     # we filter on the current account's ID or, if we are assuming
     # a processing role, *that* account's ID.
@@ -998,7 +998,7 @@ def process_s3_object(s3_key: list, date_range: str):
     else:
         match_account = get_assumed_role_client(
             'sts').get_caller_identity().get('Account')
-        print(f"Retrieving CUR records for account {match_account}")
+        output(f"Retrieving CUR records for account {match_account}", LogLevel.INFO)
 
     for key in s3_key:
         output(f"Processing CUR file {key}", LogLevel.INFO)
