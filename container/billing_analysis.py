@@ -3284,7 +3284,7 @@ def process_s3_storage_costs(row: dict):
 
 def safe_requests_get(url, headers=None):
     try:
-        response = requests.post(
+        response = requests.get(
             url,
             headers=headers,
             timeout=60
