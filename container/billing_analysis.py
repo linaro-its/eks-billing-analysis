@@ -2411,6 +2411,7 @@ def process_vpc(row: dict):
     # that with any CI job that might have used it.
     if row[UNBLENDED_COST] == "0.0000000000":
         output(f"{row[USAGE_TYPE]} has no cost - ignoring", LogLevel.WARNING)
+        processed_this_row(row)
         return
     if row[USAGE_TYPE].endswith("-PublicIPv4:InUseAddress"):
         # Mark it as unallocated for now.
@@ -2559,9 +2560,9 @@ def get_data_from_cache(
             values["start_time"] == enc_start and \
                 values["end_time"] == end_end:
             return True, values["data"]
-    print(
-        f"Cache miss looking for {data_type} with id {identifier},"
-        f" start time {start_time} and end time {end_time}")
+    # print(
+    #     f"Cache miss looking for {data_type} with id {identifier},"
+    #     f" start time {start_time} and end time {end_time}")
     return False, None
 
 
