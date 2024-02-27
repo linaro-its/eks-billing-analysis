@@ -103,7 +103,8 @@ EXPECTED_BASE_COSTS = [
     "AWSGlue",
     "AWSMigrationHubRefactorSpaces",
     "AWSSystemsManager",
-    "AWSConfig"
+    "AWSConfig",
+    "AmazonLocationService"
 ]
 
 
@@ -134,7 +135,7 @@ def init_jwks_client():
     if JWKS_CLIENT is None:
         url = AUTH0_CLIENT_URL.replace(
             "/oauth/token", "/.well-known/jwks.json")
-        JWKS_CLIENT = PyJWKClient(url, cache_keys=True)
+        JWKS_CLIENT = PyJWKClient(url)
     return JWKS_CLIENT
 
 
@@ -206,8 +207,11 @@ def sync_codelinaro_project_costs(date_range: str):
     # Iterate through the projects, pipelines and jobs. If
     # we have any costs that don't exist in previous_data or
     # are a different value, tell CodeLinaro.
+    project_count = len(PROJECT_COSTS)
+    project_index = 0
     for project in PROJECT_COSTS:
-        compare_project_costs(previous_data, auth_token, project)
+        project_index += 1
+        compare_project_costs(previous_data, auth_token, project, project_index, project_count)
         compare_cache_costs(previous_data, year_month, auth_token, project)
         compare_persistent_storage_costs(
             previous_data, year_month, auth_token, project)
@@ -304,20 +308,26 @@ def compare_cache_costs(previous_data: list, year_month: str, auth_token: str, p
             previous_cost, previous_pricelist_cost, auth_token)
 
 
-def compare_project_costs(previous_data: list, auth_token: str, project: dict):
+def compare_project_costs(
+        previous_data: list, auth_token: str, project: dict, index: int, count: int):
     """Save project costs to CodeLinaro if we have any
 
     Args:
         previous_data (list): cost data saved from previous run
         auth_token (str): CodeLinaro API auth
         project (dict): dict of calculated project costs
+        index (int): index into the list of projects
+        count (int): how many projects we are processing
     """
     if "pipelines" in project:
         counter = 1
         last_output = ""
         pipeline_len = len(project["pipelines"])
         for pipeline in project["pipelines"]:
-            new_output = f"Saving job costs: {int(counter*100/pipeline_len)}%"
+            new_output = (
+                f"Saving job costs: {int(counter*100/pipeline_len)}%"
+                f" for project #{index} of {count}"
+            )
             if new_output != last_output:
                 output(new_output, LogLevel.INFO)
                 last_output = new_output
@@ -461,20 +471,20 @@ def save_codelinaro_job_cost(
     previous_pricelist_cost = job_data.get("pricelist_cost", None)
 
     if project_id is None or pipeline_id is None or job_id is None:
-        if DEBUG:
-            output(
-                f"Skipping cost ({job_cost:.10f}) because one or more of "
-                f"{project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
+        # if DEBUG:
+        output(
+            f"Skipping cost ({job_cost:.10f}) because one or more of "
+            f"{project_id}/{pipeline_id}/{job_id} is None", LogLevel.WARNING)
         return
 
     if not SAVE_ALREADY_SAVED and previous_pricelist_cost is not None and \
             previous_cost is not None and \
             equal_to_x_dp(job_cost, previous_cost) and \
             equal_to_x_dp(pricelist_cost, previous_pricelist_cost):
-        if DEBUG:
-            output(
-                f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because "
-                "it hasn't changed from last time", LogLevel.INFO)
+        # if DEBUG:
+        output(
+            f"Skipping cost for {project_id}/{pipeline_id}/{job_id} because "
+            "it hasn't changed from last time ({job_cost:.10f})", LogLevel.INFO)
         return
 
     if previous_cost is None:
@@ -482,10 +492,10 @@ def save_codelinaro_job_cost(
     else:
         previously = f", previous cost {previous_cost:.10f}"
 
-    if DEBUG:
-        output(
-            f"Saving cost ({job_cost:.10f}{previously}) of "
-            f"{project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
+    # if DEBUG:
+    # output(
+    #     f"Saving cost ({job_cost:.10f}{previously}) of "
+    #     f"{project_id}/{pipeline_id}/{job_id} to CodeLinaro API", LogLevel.INFO)
 
     body = {
         "repoID": project_id,
@@ -501,12 +511,12 @@ def save_codelinaro_job_cost(
     response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI job cost failed. Payload was:", LogLevel.INFO)
-        output(json.dumps(body), LogLevel.INFO)
     else:
         output(
             f"Saved cost ({job_cost:.10f}{previously}) of "
             f"{project_id}/{pipeline_id}/{job_id} to CodeLinaro "
             f"API ({response.status_code})", LogLevel.INFO)
+    output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -818,7 +828,10 @@ def process_billing_report(month: int, year: int):
         return
     if found_latest == last_cur_file:
         output(f"No newer CUR file since {last_cur_file}", LogLevel.INFO)
-        return
+        if SAVE_ALREADY_SAVED:
+            output("... but re-processing because SAVE_ALREADY_SAVED is True", LogLevel.INFO)
+        else:
+            return
     process_s3_object(found_latest, date_range)
 
 
@@ -1084,6 +1097,11 @@ def process_s3_object(s3_key: list, date_range: str):
     # measure.
     check_for_unprocessed_ec2nw_costs()
 
+    # The mechanism for matching ENIs is not foolproof and dependent on the
+    # information in the CUR file. So, anything unprocessed gets treated as
+    # unallocated rather than generating an error.
+    check_for_unprocessed_ec2vpc_costs()
+
     totalise_costs(date_range, s3_key)
 
 
@@ -1111,6 +1129,8 @@ def retrieve_eni_instance_id(line: dict) -> str:
         return line[INSTANCE_ID]
     if NODE_INSTANCE_ID in line and line[NODE_INSTANCE_ID] != "":
         return line[NODE_INSTANCE_ID]
+    output("Unable to determine ENI from CUR entry", LogLevel.INFO)
+    output(json.dumps(str), LogLevel.INFO)
     return None
 
 
@@ -2414,8 +2434,7 @@ def process_vpc(row: dict):
         processed_this_row(row)
         return
     if row[USAGE_TYPE].endswith("-PublicIPv4:InUseAddress"):
-        # Mark it as unallocated for now.
-        add_to(UNALLOCATED_COSTS, row)
+        append_to(PENDING_EC2VPC_COSTS, row)
     else:
         output(f"Unexpected VPC cost {row[USAGE_TYPE]}", LogLevel.ERROR)
         output(json.dumps(row), LogLevel.ERROR)
@@ -3311,4 +3330,6 @@ def safe_requests_post(
 
 
 if __name__ == "__main__":
+    sts = get_assumed_role_client("sts")
+    print(sts.get_caller_identity())
     perform_billing_analysis()
