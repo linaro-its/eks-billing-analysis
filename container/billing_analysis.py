@@ -1130,7 +1130,7 @@ def retrieve_eni_instance_id(line: dict) -> str:
     if NODE_INSTANCE_ID in line and line[NODE_INSTANCE_ID] != "":
         return line[NODE_INSTANCE_ID]
     output("Unable to determine ENI from CUR entry", LogLevel.INFO)
-    output(json.dumps(str), LogLevel.INFO)
+    output(json.dumps(line), LogLevel.INFO)
     return None
 
 
