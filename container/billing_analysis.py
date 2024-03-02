@@ -1133,22 +1133,31 @@ def retrieve_eni_instance_id(line: dict) -> str:
 
 
 def check_for_unprocessed_ec2vpc_costs():
-    """If there are unprocessed ec2vpc costs due to instances not present in CUR, put them
-       (temporarily) as unallocated.
+    """
+    If there are unprocessed ec2vpc costs due to instances not present in CUR, put them
+    (temporarily) as unallocated.
+
+    Also, if there are unprocessed costs because there is no instance ID match, put
+    them (permanently) as unallocated. Otherwise we end up with an error because the
+    data hasn't been processed. If we don't have an instance ID match, we don't know
+    where to charge this cost - job or base group. So by the time we get here, there
+    aren't any further options for processing the data.
     """
     for date in PENDING_EC2VPC_COSTS:
         for line in PENDING_EC2VPC_COSTS[date]:
-            instance_id = retrieve_eni_instance_id(line)
-            if line[LINE_ITEM_ID] != "" and \
-                instance_id is not None and \
-                    missing_ec2_instance(line[RESOURCE_ID]):
-                output(
-                    "Moving unprocessed EC2VPC cost to unallocated because resource "
-                    f"ID {instance_id} cannot be found in CUR file. This should "
-                    "be a temporary situation until the next file is processed.",
-                    LogLevel.WARNING
-                )
-                add_to(UNALLOCATED_COSTS, line)
+            if line[LINE_ITEM_ID] != "":
+                # Not processed yet
+                instance_id = retrieve_eni_instance_id(line)
+                if instance_id is None:
+                    add_to(UNALLOCATED_COSTS, line)
+                elif missing_ec2_instance(line[RESOURCE_ID]):
+                    output(
+                        "Moving unprocessed EC2VPC cost to unallocated because resource "
+                        f"ID {instance_id} cannot be found in CUR file. This should "
+                        "be a temporary situation until the next file is processed.",
+                        LogLevel.WARNING
+                    )
+                    add_to(UNALLOCATED_COSTS, line)
 
 
 def missing_ec2_instance(resource_id: str) -> bool:
