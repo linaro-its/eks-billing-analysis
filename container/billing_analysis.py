@@ -1840,10 +1840,13 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
         rate = get_network_rate(row)
     elif source == "Fargate":
         rate = get_fargate_rate(row)
+    elif source == "ipv4":
+        # Pass on cost rather than look it up in the price list
+        rate = row["lineItem/UnblendedRate"]
     else:
         print(source)
         print(json.dumps(row))
-        sys.exit("Unexpected source requiring a rate")
+        sys.exit(f"ERROR! Unexpected source {source} requiring a rate")
 
     pricelist_cost = rate * float(row["lineItem/UsageAmount"])
     unblended_cost = float(row[UNBLENDED_COST])
