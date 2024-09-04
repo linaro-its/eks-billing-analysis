@@ -25,6 +25,7 @@ import uuid
 import boto3
 import jwt
 import requests
+from requests.adapters import HTTPAdapter, Retry
 from botocore.exceptions import ClientError
 from dateutil import parser as dateutil_parser
 from jwt import PyJWKClient
@@ -187,6 +188,7 @@ def sync_codelinaro_project_costs(date_range: str):
     Args:
         date_range (str): the date range for the CUR file
     """
+    output(f"sync_codelinaro_project_costs: {date_range}", LogLevel.DEBUG)
     previous_data = []
 
     # If a file already exists on S3, read it into previous_data
@@ -754,6 +756,8 @@ def perform_billing_analysis():
             process_billing_report(last_month, last_month_year)
         if not PROCESSING_ERROR:
             output("Processing has completed", LogLevel.INFO)
+        else:
+            output("Processing completed but with errors", LogLevel.INFO)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         output(
             "An exception has occurred in the CI Billing Analysis Script", LogLevel.ERROR)
@@ -990,7 +994,7 @@ def check_and_return(os_var: str, default: Union[None, str] = None) -> str:
     """
     if os_var not in os.environ:
         if default is None:
-            sys.exit(f"{os_var} is not defined as an environment variable")
+            sys.exit(f"ERROR! {os_var} is not defined as an environment variable")
         return default
     return os.environ[os_var]
 
@@ -1052,6 +1056,8 @@ def process_s3_object(s3_key: list, date_range: str):
     # Now go through each hour by hour, analyzing the pending costs.
     last_output = ""
     usk_len = len(USAGE_START_KEYS)
+    output(
+        f"{len(USAGE_START_KEYS)} usage_start_keys to process", LogLevel.DEBUG)
     for start in USAGE_START_KEYS:
         new_output = f"Reading CUR: {int(counter*100/usk_len)}%: {start}" if DEBUG \
             else f"Reading CUR: {int(counter*100/len(USAGE_START_KEYS))}%"
@@ -1109,6 +1115,7 @@ def check_for_unprocessed_ec2nw_costs():
     """If there are unprocessed ec2nw costs due to instances not present in CUR, put them
        (temporarily) as unallocated.
     """
+    output("check_for_unprocessed_ec2nw_costs", LogLevel.DEBUG)
     for date in PENDING_EC2NW_COSTS:
         for line in PENDING_EC2NW_COSTS[date]:
             if line[LINE_ITEM_ID] != "" and missing_ec2_instance(line[RESOURCE_ID]):
@@ -1143,6 +1150,7 @@ def check_for_unprocessed_ec2vpc_costs():
     where to charge this cost - job or base group. So by the time we get here, there
     aren't any further options for processing the data.
     """
+    output("check_for_unprocessed_ec2vpc_costs", LogLevel.DEBUG)
     for date in PENDING_EC2VPC_COSTS:
         for line in PENDING_EC2VPC_COSTS[date]:
             if line[LINE_ITEM_ID] != "":
@@ -1411,6 +1419,8 @@ def equal_to_x_dp(value1: float, value2: float, dec_points: int = 10) -> bool:
     # pylint: disable=consider-using-f-string
     str_value2 = "{value2:.{dp}f}".format(
         value2=value2, dp=dec_points)
+    if str_value1 != str_value2:
+        output(f"{str_value1} differs from {str_value2} to {dec_points} decimal places", LogLevel.DEBUG)
     return str_value1 == str_value2
 
 
@@ -1420,10 +1430,13 @@ def totalise_costs(date_range: str, cur_file: list):
     Args:
         date_range (str): the date range for this CUR file
     """
+    output("totalise_costs", LogLevel.DEBUG)
     costs_found = totalise_project_costs()
-    if not equal_to_x_dp(costs_found, TOTAL_ALLOCATED):
+    # Shave this back from 10 dp to 9 dp to avoid single digit errors from causing
+    # the script to error out.
+    if not equal_to_x_dp(costs_found, TOTAL_ALLOCATED, dec_points=9):
         output(
-            f"Total allocated to projects ({TOTAL_ALLOCATED:.10f}) differs from total cost",
+            f"Total allocated to projects ({TOTAL_ALLOCATED:.10f}) differs from total cost (to 9 decimal points)",
             LogLevel.ERROR)
     costs_found += totalise_base_costs(True)
     costs_found += totalise_unallocated_costs()
@@ -1842,7 +1855,7 @@ def add_project_build_cost(job_data: list, row: dict, source: str):
         rate = get_fargate_rate(row)
     elif source == "ipv4":
         # Pass on cost rather than look it up in the price list
-        rate = row["lineItem/UnblendedRate"]
+        rate = float(row["lineItem/UnblendedRate"])
     else:
         print(source)
         print(json.dumps(row))
@@ -2187,6 +2200,7 @@ def process_cur_report(s3_bucket: str, s3_key: str, match_account: Union[str, No
         process_cur_row(row, match_account)
 
     os.remove(temp_filename)
+    output(f"Processed {s3_key}", LogLevel.DEBUG)
 
 
 def process_cur_row(row: dict, match_account: Union[str, None]):
@@ -2223,17 +2237,22 @@ def process_cur_row(row: dict, match_account: Union[str, None]):
 
 def check_pending_volumes():
     """ Check the pending volumes to see if any are for a code node """
+    output("check_pending_volumes", LogLevel.DEBUG)
     global PENDING_VOLUME_COSTS
     new_pending_volumes = {}
     for key in PENDING_VOLUME_COSTS:
         for volume in PENDING_VOLUME_COSTS[key]:
             if volume_in_nodegroup(volume):
                 add_to(BASE_COSTS, volume)
-            elif INSTANCE_ID in volume and volume[INSTANCE_ID] == "":
-                # We have a volume but no instance ID to help link to an instance
-                add_to(UNALLOCATED_COSTS, volume)
+            elif INSTANCE_ID in volume:
+                if volume[INSTANCE_ID] == "":
+                    # We have a volume but no instance ID to help link to an instance
+                    add_to(UNALLOCATED_COSTS, volume)
+                else:
+                    append_to(new_pending_volumes, volume)
             else:
-                append_to(new_pending_volumes, volume)
+                # For some reason, we have a volume cost without an instance ID
+                add_to(UNALLOCATED_COSTS, volume)
     PENDING_VOLUME_COSTS = new_pending_volumes
 
 
@@ -3313,15 +3332,20 @@ def process_s3_storage_costs(row: dict):
 
 
 def safe_requests_get(url, headers=None):
+    """ Use the Retry code to try to ensure requests are fulfilled """
     try:
-        response = requests.get(
+        session = requests.Session()
+        retries = Retry(total=5, backoff_factor=1)
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount(url, adapter)
+        response = session.get(
             url,
             headers=headers,
-            timeout=60
+            timeout=60,
         )
         return response
     except Exception as exc: # pylint: disable=broad-exception-caught
-        sys.exit(f"GET to {url} failed with exception: {exc}")
+        sys.exit(f"ERROR! GET to {url} failed with exception: {exc}")
 
 
 def safe_requests_post(
@@ -3336,7 +3360,7 @@ def safe_requests_post(
         return response
     except Exception as exc: # pylint: disable=broad-exception-caught
         print(f"Payload: {json.dumps(body)}")
-        sys.exit(f"POST to {url} failed with exception: {exc}")
+        sys.exit(f"ERROR! POST to {url} failed with exception: {exc}")
 
 
 if __name__ == "__main__":

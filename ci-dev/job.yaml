@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jan-billing-job
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      serviceAccountName: eks-billing-serviceaccount
+      containers:
+      - name: billing
+        image: 308408519755.dkr.ecr.ap-southeast-1.amazonaws.com/eks-billing-analysis:jan
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            memory: "4Gi"
+      restartPolicy: Never
+  backoffLimit: 0

@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-cronjob
+spec:
+  schedule: "0 9 * * *"
+  successfulJobsHistoryLimit: 0
+  failedJobsHistoryLimit: 0
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: eks-billing-serviceaccount
+          nodeSelector:
+            kubernetes.io/arch: amd64
+          containers:
+          - name: billing
+            image: 308408519755.dkr.ecr.ap-southeast-1.amazonaws.com/eks-billing-analysis:101
+            imagePullPolicy: IfNotPresent
+            resources:
+              requests:
+                memory: "4Gi"
+          restartPolicy: Never
+      backoffLimit: 0

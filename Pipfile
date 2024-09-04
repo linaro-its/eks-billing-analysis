@@ -7,6 +7,7 @@ name = "pypi"
 boto3 = "*"
 requests = "*"
 pyjwt = {extras = ["crypto"], version = "*"}
+boto3-stubs = {extras = ["s3"], version = "*"}
 
 [dev-packages]
 autopep8 = "*"
