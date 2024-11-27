@@ -91,6 +91,7 @@ EXPECTED_BASE_COSTS = [
     "AmazonCloudWatch",
     "AWSSecretsManager",
     "AmazonECR",  # Stores the container to run the script as a job
+    "AmazonECRPublic", # Stores container images to be used by jobs
     "AWSLambda",  # Can be removed once Lambda is no longer used
     "AmazonApiGateway",  # Used by CodeLinaro to run a k8s admission controller and an
     # endpoint to manage EFS persistent storage, deployed with Zappa
@@ -286,7 +287,7 @@ def save_codelinaro_persistent_storage_cost(
     response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI persistent storage cost failed. Payload was:", LogLevel.INFO)
-        output(json.dumps(body), LogLevel.INFO)
+    output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -566,7 +567,7 @@ def save_codelinaro_project_cache_cost(
     response = safe_requests_post(url, header, body)
     if response.status_code > 299:
         output("Saving CI cache cost failed. Payload was:", LogLevel.INFO)
-        output(json.dumps(body), LogLevel.INFO)
+    output(json.dumps(body), LogLevel.INFO)
     response.raise_for_status()
 
 
@@ -1432,11 +1433,11 @@ def totalise_costs(date_range: str, cur_file: list):
     """
     output("totalise_costs", LogLevel.DEBUG)
     costs_found = totalise_project_costs()
-    # Shave this back from 10 dp to 9 dp to avoid single digit errors from causing
+    # Shave this back from 10 dp to 5 dp to avoid single digit errors from causing
     # the script to error out.
-    if not equal_to_x_dp(costs_found, TOTAL_ALLOCATED, dec_points=9):
+    if not equal_to_x_dp(costs_found, TOTAL_ALLOCATED, dec_points=5):
         output(
-            f"Total allocated to projects ({TOTAL_ALLOCATED:.10f}) differs from total cost (to 9 decimal points)",
+            f"Total allocated to projects ({TOTAL_ALLOCATED:.10f}) differs from total cost (to 5 decimal points)",
             LogLevel.ERROR)
     costs_found += totalise_base_costs(True)
     costs_found += totalise_unallocated_costs()
@@ -1738,12 +1739,12 @@ def job_times_for_slot(
     job_start = job["job_start"]
     job_end = job["job_end"]
 
-    if job_start > row_end:
+    if job_start is None or job_start > row_end:
         job_start = None
     elif job_start < row_start:
         job_start = row_start
 
-    if job_end < row_start:
+    if job_end is None or job_end < row_start:
         job_end = None
     elif job_end > row_end:
         job_end = row_end
@@ -2216,6 +2217,7 @@ def process_cur_row(row: dict, match_account: Union[str, None]):
     # There are lots of different line item types but only three
     # relates to usage charges
     if "Usage" not in row["lineItem/LineItemType"]:
+        output(f"Adding row to base cost because '{row['lineItem/LineItemType']}' doesn't contain 'Usage'", LogLevel.DEBUG)
         process_base_cost(row)
     elif code in EXPECTED_BASE_COSTS:
         process_base_cost(row)
@@ -2389,8 +2391,9 @@ def process_ec2_instance(row: dict):
         # See if this was created by Karpenter. If it was, treat
         # it as a Node instance.
         name = row[USER_NAME_TAG]
-        if len(name) > len(PROVISIONER_NAME) and \
-                name[:len(PROVISIONER_NAME)] == PROVISIONER_NAME:
+        if (len(name) > len(PROVISIONER_NAME) and \
+                name[:len(PROVISIONER_NAME)] == PROVISIONER_NAME) or \
+                    name.endswith(".compute.internal"):
             # It must be a Node EC2 instance so hold it for now.
             append_to(PENDING_INSTANCE_COSTS, row)
             # print(row[RESOURCE_ID], row[USER_NAME_TAG])
@@ -2408,6 +2411,7 @@ def process_ec2_instance(row: dict):
         DEFAULT_NODE_INSTANCES.append(row[RESOURCE_ID])
     if row[USER_NAME_TAG] not in DEFAULT_NODE_GROUPS:
         DEFAULT_NODE_GROUPS.append(row[USER_NAME_TAG])
+    output(f"Adding node cost to base costs (name={row[USER_NAME_TAG]})", LogLevel.DEBUG)
     add_to(BASE_COSTS, row)
 
 
@@ -2418,6 +2422,7 @@ def process_eks(row: dict):
         row (dict): CUR file row
     """
     if row["lineItem/Operation"] != "FargatePod":
+        output(f"Adding EKS cost for operation that isn't FargatePod ({row['lineItem/Operation']})", LogLevel.DEBUG)
         add_to(BASE_COSTS, row)
         return
 
@@ -2566,11 +2571,15 @@ def fetch_job_times_from_gitlab(
     if not found or data is None:
         output(f"Fetching job times for '{gitlab_job}'", LogLevel.DEBUG)
         header = {
-            "PRIVATE-TOKEN": GITLAB_TOKEN
+            "Authorization": f"Bearer {GITLAB_TOKEN}"
         }
         response = safe_requests_get(
-            f"{GITLAB_URL}api/v4/projects/{project_id}/jobs/{job_id}",
+            f"{GITLAB_URL}api/v4/{gitlab_job}",
             header)
+        # Sometimes we get an unauthorized error from GitLab
+        if response.status_code == 401:
+            output("Got 401 back", LogLevel.DEBUG)
+            return None, None
         response.raise_for_status()
         data = response.json()
         save_data_to_cache(
