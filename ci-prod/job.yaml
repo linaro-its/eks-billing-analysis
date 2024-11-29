@@ -10,7 +10,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: billing
-        image: 686898173092.dkr.ecr.ap-southeast-1.amazonaws.com/eks-billing-analysis:43
+        image: 686898173092.dkr.ecr.ap-southeast-1.amazonaws.com/eks-billing-analysis:oct
         imagePullPolicy: IfNotPresent
         resources:
           requests:
