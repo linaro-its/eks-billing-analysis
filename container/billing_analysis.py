@@ -511,7 +511,7 @@ def save_codelinaro_job_cost(
         "Authorization": f"Bearer {auth}"
     }
     url = f"{CLO_API_URL}/ci/job"
-    response = safe_requests_post(url, header, body)
+    response = safe_requests_post(url, header, body, retries=True)
     if response.status_code > 299:
         output("Saving CI job cost failed. Payload was:", LogLevel.INFO)
     else:
@@ -3358,14 +3358,26 @@ def safe_requests_get(url, headers=None):
 
 
 def safe_requests_post(
-        url, headers=None, body=None):
+        url, headers=None, body=None, retries=False):
     try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=body,
-            timeout=60
-        )
+        if retries:
+            session = requests.Session()
+            retries = Retry(total=5, backoff_factor=1)
+            adapter = HTTPAdapter(max_retries=retries)
+            session.mount(url, adapter)
+            response = session.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=60
+            )
+        else:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=60
+            )
         return response
     except Exception as exc: # pylint: disable=broad-exception-caught
         print(f"Payload: {json.dumps(body)}")
